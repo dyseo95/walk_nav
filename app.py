@@ -6,7 +6,7 @@ import networkx as nx
 import numpy as np
 import geopandas as gpd
 from shapely.geometry import Point
-from gtts import gTTS # 음성 안내용
+from gtts import gTTS 
 import base64
 import io
 
@@ -29,6 +29,8 @@ st.markdown("""
     .stButton>button { background-color: #03C75A; color: white !important; border-radius: 8px; border: none; height: 3em; font-weight: bold; width: 100%; }
     .result-card { background-color: #ffffff; border-top: 1px solid #eee; padding: 20px; border-radius: 20px 20px 0 0; box-shadow: 0 -4px 10px rgba(0,0,0,0.05); margin-top: -20px; position: relative; z-index: 1000; }
     .block-container { padding-top: 0.5rem; padding-bottom: 5rem; }
+    /* 오디오 플레이어 스타일 */
+    audio { width: 100%; margin-bottom: 10px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -40,28 +42,29 @@ if 'map_center' not in st.session_state: st.session_state['map_center'] = [37.56
 if 'route_data' not in st.session_state: st.session_state['route_data'] = None
 if 'last_pos' not in st.session_state: st.session_state['last_pos'] = None
 if 'gps_mode' not in st.session_state: st.session_state['gps_mode'] = True 
-if 'facility_data' not in st.session_state: st.session_state['facility_data'] = [] # 편의시설 데이터
+if 'facility_data' not in st.session_state: st.session_state['facility_data'] = []
 
 # ---------------------------------------------------------
-# 3. 헬퍼 함수 (음성 & 편의시설)
+# 3. 헬퍼 함수
 # ---------------------------------------------------------
 def text_to_speech(text):
-    """텍스트를 음성(mp3)으로 변환하여 HTML 오디오 태그 반환"""
+    """텍스트를 음성(mp3)으로 변환하여 HTML 오디오 태그 반환 (Controls 추가)"""
     try:
         tts = gTTS(text=text, lang='ko')
         mp3_fp = io.BytesIO()
         tts.write_to_fp(mp3_fp)
         mp3_fp.seek(0)
         b64 = base64.b64encode(mp3_fp.read()).decode()
+        # autoplay와 함께 controls 속성을 추가하여 플레이어를 보이게 함
         return f"""
-            <audio autoplay="true" style="width: 100%;">
+            <audio controls autoplay>
                 <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
             </audio>
         """
-    except: return ""
+    except Exception as e:
+        return f"<div>음성 생성 실패: {e}</div>"
 
 def get_facilities(point, radius=500):
-    """주변 반경 내 화장실, 편의점, 카페 검색"""
     facilities = []
     try:
         tags = {'amenity': ['toilets', 'cafe'], 'shop': ['convenience']}
@@ -168,7 +171,7 @@ with col_go:
 c_opt1, c_opt2, c_opt3 = st.columns(3)
 with c_opt1: avoid_stairs = st.checkbox("계단 회피", value=False)
 with c_opt2: avoid_danger = st.checkbox("유흥가 회피", value=False)
-with c_opt3: show_facility = st.checkbox("🏪 편의시설", value=False) # [New]
+with c_opt3: show_facility = st.checkbox("🏪 편의시설", value=False)
 st.markdown('</div>', unsafe_allow_html=True)
 
 nav_ready = st.session_state['last_pos'] is not None and st.session_state['end_point'] is not None
@@ -182,7 +185,7 @@ if nav_ready:
                 end_exit = get_nearest_subway_exit(end)
                 linear_dist = np.sqrt((start[0]-end[0])**2 + (start[1]-end[1])**2) * 111000
                 
-                # 편의시설 데이터 로딩 (옵션 켜져있을 때만)
+                # 편의시설 데이터 로딩
                 if show_facility:
                     st.session_state['facility_data'] = get_facilities(start, radius=500)
                 else:
@@ -253,7 +256,7 @@ if st.session_state['last_pos']:
 if st.session_state['end_point']:
     folium.Marker(st.session_state['end_point'], icon=folium.Icon(color='red', icon='flag')).add_to(m)
 
-# [New] 편의시설 아이콘 표시
+# 편의시설 아이콘
 if st.session_state.get('facility_data'):
     for fac in st.session_state['facility_data']:
         folium.Marker(
@@ -287,10 +290,10 @@ if output['last_clicked']:
 if st.session_state['route_data']:
     data = st.session_state['route_data']
     
-    # [New] 음성 안내 자동 재생
-    speech_text = f"경로 안내를 시작합니다. 목적지까지 약 {data['time']}분, 거리는 {data['dist']}미터입니다."
+    # 음성 안내 플레이어
+    speech_text = f"목적지까지 약 {data['time']}분 걸립니다. 안전하게 안내해 드릴게요."
     audio_html = text_to_speech(speech_text)
-    st.markdown(audio_html, unsafe_allow_html=True) # 눈에 안 보이게 자동 재생
+    st.markdown(audio_html, unsafe_allow_html=True)
 
     st.markdown(f"""
     <div class="result-card">
