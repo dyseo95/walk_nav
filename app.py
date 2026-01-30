@@ -14,65 +14,76 @@ except ImportError:
     get_geolocation = None
 
 # ---------------------------------------------------------
-# 1. 설정 및 네이버 스타일 CSS 주입
+# 1. 페이지 설정 & "강제 라이트 모드" CSS
 # ---------------------------------------------------------
 st.set_page_config(page_title="뚜벅이 NAVI", layout="wide", initial_sidebar_state="collapsed")
 
-# [핵심] 네이버 지도 스타일 CSS
 st.markdown("""
 <style>
-    /* 1. 상단 헤더 숨기기 및 여백 제거 (풀스크린 느낌) */
-    header {visibility: hidden;}
-    footer {visibility: hidden;}
-    .block-container {
-        padding-top: 0rem;
-        padding-bottom: 2rem;
-        padding-left: 0.5rem;
-        padding-right: 0.5rem;
+    /* [핵심] 다크모드 무시하고 무조건 라이트 모드(흰색 바탕, 검은 글씨) 강제 적용 */
+    [data-testid="stAppViewContainer"] {
+        background-color: #ffffff;
+        color: #000000;
+    }
+    [data-testid="stHeader"] {
+        background-color: #ffffff;
+    }
+    [data-testid="stSidebar"] {
+        background-color: #f8f9fa;
     }
     
-    /* 2. 네이버 그린 버튼 스타일 */
+    /* 입력창 텍스트 색상 강제 (검정) */
+    .stTextInput input {
+        color: #000000 !important;
+        background-color: #f0f2f5 !important;
+    }
+    
+    /* 체크박스 글씨 색상 */
+    .stCheckbox label {
+        color: #000000 !important;
+    }
+
+    /* 상단 컨트롤 박스 스타일 */
+    .control-panel {
+        background-color: #ffffff;
+        padding: 15px;
+        border-radius: 15px;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        margin-bottom: 15px;
+        border: 1px solid #e0e0e0;
+    }
+
+    /* 네이버 스타일 버튼 */
     .stButton>button {
-        background-color: #03C75A; /* 네이버 그린 */
-        color: white;
-        border: none;
+        background-color: #03C75A;
+        color: white !important;
         border-radius: 8px;
+        border: none;
         height: 3em;
         font-weight: bold;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-        transition: all 0.2s;
+        width: 100%;
     }
     .stButton>button:hover {
         background-color: #02b351;
-        color: white;
-    }
-    .stButton>button:active {
-        background-color: #029f48;
-        color: white;
+        color: white !important;
     }
 
-    /* 3. 검색창 스타일 (둥글게) */
-    div[data-testid="stTextInput"]>div>div {
-        border-radius: 20px;
-        border: 2px solid #03C75A;
-    }
-
-    /* 4. 정보창 카드 스타일 */
-    .info-card {
-        background-color: white;
-        padding: 15px;
-        border-radius: 12px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        margin-bottom: 10px;
-        border-left: 5px solid #03C75A;
+    /* 결과 카드 스타일 (Bottom Sheet 느낌) */
+    .result-card {
+        background-color: #ffffff;
+        border-top: 1px solid #eee;
+        padding: 20px;
+        border-radius: 20px 20px 0 0;
+        box-shadow: 0 -4px 10px rgba(0,0,0,0.05);
+        margin-top: -20px;
+        position: relative;
+        z-index: 1000;
     }
     
-    /* 5. 옵션 박스 스타일 */
-    div[data-testid="stExpander"] {
-        border: none;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
-        border-radius: 10px;
-        background-color: #f8f9fa;
+    /* 여백 제거 */
+    .block-container {
+        padding-top: 1rem;
+        padding-bottom: 5rem;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -87,7 +98,7 @@ if 'last_pos' not in st.session_state: st.session_state['last_pos'] = None
 if 'gps_mode' not in st.session_state: st.session_state['gps_mode'] = True 
 
 # ---------------------------------------------------------
-# 3. 실시간 GPS 엔진
+# 3. GPS 엔진
 # ---------------------------------------------------------
 if st.session_state['gps_mode'] and get_geolocation:
     try:
@@ -100,11 +111,10 @@ if st.session_state['gps_mode'] and get_geolocation:
                 st.session_state['map_center'] = [lat, lon]
                 st.session_state['init_gps'] = True
                 st.rerun()
-    except:
-        st.session_state['gps_mode'] = False
+    except: st.session_state['gps_mode'] = False
 
 # ---------------------------------------------------------
-# 4. 헬퍼 함수 (v19.1 알고리즘 유지)
+# 4. 헬퍼 함수
 # ---------------------------------------------------------
 def get_nearest_subway_exit(point, radius=200):
     try:
@@ -148,37 +158,36 @@ def calculate_pedestrian_weight(G_proj, danger_zone_proj, avoid_stairs=False, av
     return G_proj
 
 # ---------------------------------------------------------
-# 5. UI 컨트롤 (네이버 지도 스타일 배치)
+# 5. UI 컨트롤 패널 (상단 고정 느낌)
 # ---------------------------------------------------------
-# 상단 검색 바 (Floating Bar 느낌)
-col_search, col_btn = st.columns([4, 1])
-with col_search:
-    dest_query = st.text_input("검색", placeholder="장소, 주소 검색", label_visibility="collapsed")
-with col_btn:
-    if st.button("🔍"):
+st.markdown('<div class="control-panel">', unsafe_allow_html=True)
+col_input, col_go = st.columns([3, 1])
+
+with col_input:
+    # 검색창 아이콘과 함께 배치
+    dest_query = st.text_input("목적지 검색", placeholder="장소, 주소 입력", label_visibility="collapsed")
+
+with col_go:
+    if st.button("🔍 이동"):
         if dest_query:
             try:
                 coords = ox.geocode(dest_query)
                 st.session_state['map_center'] = coords
                 st.session_state['end_point'] = coords
                 st.rerun()
-            except: st.error("장소를 찾지 못했어요.")
+            except: st.error("장소 미발견")
 
-# 옵션 (접이식 메뉴)
-with st.expander("⚙️ 경로 옵션", expanded=False):
-    opt_col1, opt_col2 = st.columns(2)
-    with opt_col1: avoid_stairs = st.checkbox("계단 피하기", value=False)
-    with opt_col2: avoid_danger = st.checkbox("유흥가 피하기", value=False)
+# 옵션 토글 (깔끔하게 한 줄로)
+c_opt1, c_opt2 = st.columns(2)
+with c_opt1: avoid_stairs = st.checkbox("🪜 계단 회피", value=False)
+with c_opt2: avoid_danger = st.checkbox("🛡️ 유흥가 회피", value=False)
+st.markdown('</div>', unsafe_allow_html=True)
 
-# ---------------------------------------------------------
-# 6. 경로 계산 엔진
-# ---------------------------------------------------------
-# 하단 플로팅 액션 버튼 느낌의 레이아웃
+# 길찾기 버튼 (중앙 배치)
 nav_ready = st.session_state['last_pos'] is not None and st.session_state['end_point'] is not None
-
 if nav_ready:
-    if st.button("길찾기 시작 (Go)", type="primary"):
-        with st.spinner("최적의 경로를 찾는 중..."):
+    if st.button("🚀 현위치에서 경로안내 시작", type="primary"):
+        with st.spinner("경로 계산 중..."):
             try:
                 start = st.session_state['last_pos']
                 end = st.session_state['end_point']
@@ -188,7 +197,7 @@ if nav_ready:
                 
                 if linear_dist > 5000:
                     walk_time = int(linear_dist / 67)
-                    st.session_state['route_data'] = {'coords': [start, end], 'type': 'drone', 'time': walk_time, 'dist': int(linear_dist), 'msg': "거리가 멀어 직선 안내", 'danger_geojson': None, 'segments': [], 'special_points': [], 'subway_info': None}
+                    st.session_state['route_data'] = {'coords': [start, end], 'type': 'drone', 'time': walk_time, 'dist': int(linear_dist), 'msg': "장거리 직선 안내", 'danger_geojson': None, 'segments': [], 'special_points': [], 'subway_info': None}
                 else:
                     mid_lat = (start[0] + end[0]) / 2; mid_lon = (start[1] + end[1]) / 2
                     radius = linear_dist / 2 + 1000 
@@ -212,8 +221,7 @@ if nav_ready:
                     dest = ox.distance.nearest_nodes(G, end[1], end[0])
                     
                     if orig == dest:
-                        walk_time = 1
-                        st.session_state['route_data'] = {'coords': [start, end], 'type': 'micro', 'time': walk_time, 'dist': int(linear_dist), 'msg': "도착했습니다!", 'danger_geojson': None, 'segments': [], 'special_points': [], 'subway_info': {'start': start_exit, 'end': end_exit}}
+                        st.session_state['route_data'] = {'coords': [start, end], 'type': 'micro', 'time': 1, 'dist': int(linear_dist), 'msg': "도착!", 'danger_geojson': None, 'segments': [], 'special_points': [], 'subway_info': {'start': start_exit, 'end': end_exit}}
                     else:
                         route = nx.shortest_path(G_proj, orig, dest, weight='walk_cost')
                         res_coords = []; total_len = 0; segments = []; special_points = []
@@ -237,40 +245,17 @@ if nav_ready:
                             else: res_coords.append((G.nodes[u]['y'], G.nodes[u]['x'])); res_coords.append((G.nodes[v]['y'], G.nodes[v]['x']))
                         
                         walk_time = int(total_len / 67)
-                        st.session_state['route_data'] = {'coords': res_coords, 'type': 'normal', 'time': walk_time, 'dist': int(total_len), 'msg': "경로 안내 중", 'danger_geojson': danger_geojson, 'segments': segments, 'special_points': special_points, 'subway_info': {'start': start_exit, 'end': end_exit}}
-            except Exception as e: st.error(f"경로를 찾을 수 없어요: {e}")
-else:
-    # GPS가 없거나 목적지가 없을 때 안내 문구
-    if st.session_state['last_pos'] is None:
-        st.info("📡 GPS 위치를 찾는 중입니다...")
-    elif st.session_state['end_point'] is None:
-        st.info("👆 지도에서 목적지를 검색하거나 클릭하세요.")
+                        st.session_state['route_data'] = {'coords': res_coords, 'type': 'normal', 'time': walk_time, 'dist': int(total_len), 'msg': "안내 중", 'danger_geojson': danger_geojson, 'segments': segments, 'special_points': special_points, 'subway_info': {'start': start_exit, 'end': end_exit}}
+            except Exception as e: st.error(f"오류: {e}")
 
 # ---------------------------------------------------------
-# 7. 지도 및 정보창 (네이버 스타일)
+# 6. 메인 지도 (화면 꽉 차게)
 # ---------------------------------------------------------
-# 정보창 (카카오택시/네이버 지도 하단 패널 느낌)
-if st.session_state['route_data']:
-    data = st.session_state['route_data']
-    st.markdown(f"""
-    <div class="info-card">
-        <h3 style="margin:0; color:#03C75A;">{data['time']}분 <span style="font-size:0.8em; color:gray;">({data['dist']}m)</span></h3>
-        <p style="margin:0;">{data['msg']}</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    with st.expander("상세 경로 보기"):
-         for idx, seg in enumerate(data['segments']):
-            icon = "🚶"
-            if "횡단보도" in seg['name']: icon = "🚦"
-            elif "지하" in seg['name']: icon = "🚇"
-            st.write(f"{idx+1}. {icon} {seg['name']} ({seg['len']}m)")
-
 m = folium.Map(location=st.session_state['map_center'], zoom_start=17, tiles=None)
 folium.TileLayer('https://xdworld.vworld.kr/2d/Base/service/{z}/{x}/{y}.png', attr='VWorld', name='VWorld').add_to(m)
 
 if st.session_state['last_pos']:
-    folium.CircleMarker(location=st.session_state['last_pos'], radius=10, color='white', fill=True, fill_color='#03C75A', fill_opacity=1, tooltip="나").add_to(m)
+    folium.CircleMarker(location=st.session_state['last_pos'], radius=10, color='white', fill=True, fill_color='#03C75A', fill_opacity=1, tooltip="현위치").add_to(m)
 
 if st.session_state['end_point']:
     folium.Marker(st.session_state['end_point'], icon=folium.Icon(color='red', icon='flag')).add_to(m)
@@ -278,19 +263,40 @@ if st.session_state['end_point']:
 if st.session_state.get('route_data'):
     data = st.session_state['route_data']
     if data['coords']:
-        folium.PolyLine(data['coords'], color='#03C75A', weight=8, opacity=0.8).add_to(m) # 네이버 그린 경로선
+        folium.PolyLine(data['coords'], color='#03C75A', weight=8, opacity=0.8).add_to(m)
         for sp in data['special_points']:
             folium.Marker(sp['coords'], icon=folium.Icon(color=sp['color'], icon=sp['icon'], prefix='fa'), tooltip=sp['tooltip']).add_to(m)
         m.fit_bounds(data['coords'])
 
-output = st_folium(m, width=1000, height=600, key="main_map") # 지도 높이 키움
+# 지도 높이를 키워서 모바일에서 시원하게 보이게 함 (700px)
+output = st_folium(m, width="100%", height=700, key="main_map")
 
 if output['last_clicked']:
-    clicked_lat = output['last_clicked']['lat']
-    clicked_lon = output['last_clicked']['lng']
+    clicked = (output['last_clicked']['lat'], output['last_clicked']['lng'])
     if not st.session_state['last_pos']:
-        st.session_state['last_pos'] = (clicked_lat, clicked_lon)
+        st.session_state['last_pos'] = clicked
+        st.toast("📍 출발지 설정됨")
         st.rerun()
     else:
-        st.session_state['end_point'] = (clicked_lat, clicked_lon)
+        st.session_state['end_point'] = clicked
+        st.toast("🏁 도착지 설정됨")
         st.rerun()
+
+# ---------------------------------------------------------
+# 7. 하단 정보 패널 (Bottom Sheet)
+# ---------------------------------------------------------
+if st.session_state['route_data']:
+    data = st.session_state['route_data']
+    st.markdown(f"""
+    <div class="result-card">
+        <h2 style="margin:0; color:#03C75A;">{data['time']}분 <span style="font-size:0.6em; color:#666;">({data['dist']}m)</span></h2>
+        <p style="color:#333; margin-top:5px;">{data['msg']}</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    with st.expander("📄 상세 경로 (클릭해서 보기)"):
+        for idx, seg in enumerate(data['segments']):
+             icon = "🚶"
+             if "횡단보도" in seg['name']: icon = "🚦"
+             elif "지하" in seg['name']: icon = "🚇"
+             st.write(f"{idx+1}. {icon} {seg['name']} ({seg['len']}m)")
