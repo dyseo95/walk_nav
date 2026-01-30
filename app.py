@@ -16,16 +16,16 @@ except ImportError:
 # ---------------------------------------------------------
 # 1. 설정 및 UI
 # ---------------------------------------------------------
-st.set_page_config(page_title="뚜벅이 NAVI Custom", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="뚜벅이 NAVI Final", layout="wide", initial_sidebar_state="collapsed")
 
 st.markdown("""
 <style>
     .stButton>button { width: 100%; border-radius: 15px; height: 3.5em; font-weight: bold; }
-    .status-box { padding: 10px; border-radius: 10px; background-color: #f0f2f6; margin-bottom: 10px; border-left: 5px solid #00C851; }
+    .status-box { padding: 10px; border-radius: 10px; background-color: #f0f2f6; margin-bottom: 10px; border-left: 5px solid #FF0000; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🏃 뚜벅이 네비 (v19.0: 맞춤형 경로)")
+st.title("🏃 뚜벅이 네비 (v19.1: 직진 본능)")
 
 # 세션 상태 초기화
 if 'end_point' not in st.session_state: st.session_state['end_point'] = None
@@ -53,7 +53,7 @@ if st.session_state['gps_mode'] and get_geolocation:
         st.session_state['gps_mode'] = False
 
 # ---------------------------------------------------------
-# 3. 헬퍼 함수 (핵심: 옵션에 따른 가중치 변화)
+# 3. 헬퍼 함수 (알고리즘 대수술)
 # ---------------------------------------------------------
 def get_nearest_subway_exit(point, radius=200):
     try:
@@ -76,8 +76,9 @@ def get_nearest_subway_exit(point, radius=200):
 
 def calculate_pedestrian_weight(G_proj, danger_zone_proj, avoid_stairs=False, avoid_danger=False):
     """
-    [v19.0 핵심 알고리즘]
-    사용자 옵션(avoid_stairs, avoid_danger)을 받아서 가중치를 동적으로 조절합니다.
+    [v19.1 수정 사항]
+    1. 대로변(primary) 페널티 완전 삭제 -> 직진 유도
+    2. 지하도/터널 가중치 보너스 삭제 -> 유령 지하도 회피
     """
     for u, v, k, data in G_proj.edges(keys=True, data=True):
         base_cost = data['length']
@@ -87,51 +88,40 @@ def calculate_pedestrian_weight(G_proj, danger_zone_proj, avoid_stairs=False, av
         if isinstance(highway, list): highway = highway[0]
         
         crossing = data.get('crossing', None)
-        bridge = data.get('bridge', None)
         tunnel = data.get('tunnel', None)
         
-        # -------------------------------------------------
-        # 1. 지름길 우선 (골목길 선호)
-        # -------------------------------------------------
-        if highway in ['footway', 'path', 'pedestrian', 'living_street', 'service']:
-            penalty = 0.9 # 큰 길보다 약간 더 선호 (지름길 유도)
-        elif highway in ['primary', 'secondary', 'tertiary']:
-            penalty = 1.1 # 큰 길은 약간 기피 (하지만 1.5배까지는 아님)
-        
-        # -------------------------------------------------
-        # 2. 안전 시설 이용 (횡단보도/육교/지하도)
-        # -------------------------------------------------
+        # 1. 횡단보도만 유일하게 강력 추천 (0.5)
         if highway == 'crossing' or crossing is not None:
-            penalty = 0.5 # 횡단보도 강력 추천
+            penalty = 0.5 
             
-        # 보행자 전용 터널/육교인 경우만 보너스 (차도는 제외)
-        if (bridge == 'yes' or tunnel == 'yes') and highway in ['footway', 'pedestrian', 'steps']:
-             penalty = 0.6 # 안전한 입체 교차로 선호
-             
-        # -------------------------------------------------
-        # 3. 계단/언덕 회피 (옵션)
-        # -------------------------------------------------
+        # 2. 골목길 미세 우대 (0.95) - 아주 약간만 줘서 거리가 멀면 바로 버리게 함
+        elif highway in ['footway', 'path', 'pedestrian', 'living_street']:
+            penalty = 0.95
+            
+        # 3. [중요] 큰 길(대로변) 페널티 삭제 (1.0)
+        # 이제 큰 길 옆 인도도 일반 길과 똑같이 취급합니다. 즉, 짧으면 무조건 이리로 갑니다.
+        elif highway in ['primary', 'secondary', 'tertiary', 'trunk']:
+            penalty = 1.0 
+        
+        # 4. 계단 회피 옵션
         if highway == 'steps':
-            if avoid_stairs:
-                penalty = 100.0 # 사실상 통행 금지
-            else:
-                penalty = 1.5 # 옵션 끄면 그냥 조금 힘든 길
+            if avoid_stairs: penalty = 100.0
+            else: penalty = 1.5 
 
-        # -------------------------------------------------
-        # 4. 위험 지역 회피 (옵션)
-        # -------------------------------------------------
+        # 5. 위험 지역 회피
         if danger_zone_proj and 'geometry' in data:
             if data['geometry'].intersects(danger_zone_proj):
-                if avoid_danger:
-                    penalty = 100.0 # 절대 가지 마
-                else:
-                    penalty = 1.0 # 옵션 끄면 상관 없음 (지름길이면 감)
+                if avoid_danger: penalty = 100.0
+                else: penalty = 1.0
 
+        # [수정] 터널/지하도라고 해서 무조건 가산점 주지 않음 (오류 데이터 방지)
+        # 그냥 거리대로 계산하게 둠
+            
         data['walk_cost'] = base_cost * penalty
     return G_proj
 
 # ---------------------------------------------------------
-# 4. UI 컨트롤 (옵션 추가)
+# 4. UI 컨트롤
 # ---------------------------------------------------------
 col_search, col_btn = st.columns([3, 1])
 with col_search:
@@ -146,7 +136,6 @@ with col_btn:
                 st.rerun()
             except: st.error("장소 미발견")
 
-# [New] 경로 옵션 선택창
 with st.expander("⚙️ 경로 옵션 설정 (클릭)", expanded=False):
     opt_col1, opt_col2 = st.columns(2)
     with opt_col1:
@@ -170,7 +159,7 @@ with col_reset:
 # ---------------------------------------------------------
 if nav_start:
     if st.session_state['last_pos'] and st.session_state['end_point']:
-        with st.spinner("옵션에 맞춰 길을 찾는 중..."):
+        with st.spinner("최단 직선 경로 탐색 중..."):
             try:
                 start = st.session_state['last_pos']
                 end = st.session_state['end_point']
@@ -208,7 +197,6 @@ if nav_start:
                                 danger_geojson = gpd.GeoSeries([danger_poly_vis]).__geo_interface__
                     except: pass
 
-                    # [핵심] 옵션 값을 함수에 전달
                     G_proj = calculate_pedestrian_weight(G_proj, danger_poly_proj, avoid_stairs, avoid_danger)
                     
                     orig = ox.distance.nearest_nodes(G, start[1], start[0])
@@ -216,8 +204,7 @@ if nav_start:
                     
                     if orig == dest:
                         walk_time = int(linear_dist / 67)
-                        if walk_time < 1: 
-                            walk_time = 1
+                        if walk_time < 1: walk_time = 1
                         st.session_state['route_data'] = {
                             'coords': [start, end], 'type': 'micro', 'time': walk_time, 'dist': int(linear_dist),
                             'msg': "✅ 바로 앞입니다!", 'danger_geojson': None, 'segments': [], 'special_points': [],
@@ -236,13 +223,14 @@ if nav_start:
                                 
                                 icon_type = None; point_coords = (G.nodes[u]['y'], G.nodes[u]['x'])
                                 
+                                # [수정] 지하도 텍스트 표시 조건 강화
                                 if not name:
                                     if highway == 'crossing': name = "횡단보도"; icon_type = 'traffic-light'
                                     elif highway == 'steps': name = "계단"; icon_type = 'sort-amount-asc'
-                                    elif edge.get('tunnel') == 'yes' and highway == 'pedestrian': name = "지하보도"; icon_type = 'road'
-                                    elif edge.get('bridge') == 'yes' and highway == 'pedestrian': name = "육교"; icon_type = 'road'
-                                    elif highway in ['footway', 'path', 'service']: name = "골목/샛길"
-                                    else: name = "직진"
+                                    # 진짜 확실한 경우에만 지하도라고 표시
+                                    elif edge.get('tunnel') == 'yes' and edge.get('layer', 0) < 0: 
+                                        name = "지하보도"; icon_type = 'road'
+                                    else: name = "직진" # 애매하면 그냥 직진으로 표시
                                 
                                 if icon_type: special_points.append({'coords': point_coords, 'icon': icon_type, 'tooltip': name, 'color': 'orange'})
                                 seg_len = int(edge['length'])
