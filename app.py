@@ -25,22 +25,21 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🏃 실시간 뚜벅이 네비 (v17.4)")
+st.title("🏃 실시간 뚜벅이 네비 (v17.5)")
 
 # 세션 상태 초기화
 if 'end_point' not in st.session_state: st.session_state['end_point'] = None
 if 'map_center' not in st.session_state: st.session_state['map_center'] = [37.5665, 126.9780]
 if 'route_data' not in st.session_state: st.session_state['route_data'] = None
 if 'last_pos' not in st.session_state: st.session_state['last_pos'] = None
-if 'gps_mode' not in st.session_state: st.session_state['gps_mode'] = True # GPS 사용 여부
+if 'gps_mode' not in st.session_state: st.session_state['gps_mode'] = True 
 
 # ---------------------------------------------------------
-# 2. 실시간 GPS 엔진 (안전 모드 적용)
+# 2. 실시간 GPS 엔진
 # ---------------------------------------------------------
 if st.session_state['gps_mode'] and get_geolocation:
     try:
-        # [FIX] 괄호 안을 완전히 비웠습니다. (TypeError 방지)
-        loc_data = get_geolocation()
+        loc_data = get_geolocation() # 인자 제거 (안전 모드)
 
         if loc_data and isinstance(loc_data, dict) and 'coords' in loc_data:
             lat = loc_data['coords']['latitude']
@@ -52,7 +51,6 @@ if st.session_state['gps_mode'] and get_geolocation:
                 st.session_state['init_gps'] = True
                 st.rerun()
     except Exception as e:
-        # GPS 에러 나면 조용히 수동 모드로 전환 (앱 죽음 방지)
         st.session_state['gps_mode'] = False
         print(f"GPS Error ignored: {e}")
 
@@ -174,7 +172,11 @@ if nav_start:
                     dest = ox.distance.nearest_nodes(G, end[1], end[0])
                     
                     if orig == dest:
-                        walk_time = int(linear_dist / 67); if walk_time < 1: walk_time = 1
+                        walk_time = int(linear_dist / 67)
+                        # [FIX] 문법 오류 수정 완료 (두 줄로 분리)
+                        if walk_time < 1:
+                            walk_time = 1
+                        
                         st.session_state['route_data'] = {
                             'coords': [start, end], 'type': 'micro', 'time': walk_time, 'dist': int(linear_dist),
                             'msg': "✅ 바로 앞입니다!", 'danger_geojson': None, 'segments': [], 'special_points': [],
@@ -224,8 +226,7 @@ if nav_start:
 if st.session_state['last_pos']:
     st.write(f'<div class="status-box">📍 내 위치 수신 중 | 목적지: {dest_query if st.session_state["end_point"] else "미설정"}</div>', unsafe_allow_html=True)
 else:
-    # GPS가 없거나 에러난 경우 수동 안내 메시지
-    st.warning("📡 GPS 신호가 없거나 권한이 차단되었습니다. 지도에서 '출발지'를 클릭해주세요.")
+    st.warning("📡 GPS 신호 찾는 중... (위치 권한을 허용해주세요)")
 
 if st.session_state['route_data']:
     data = st.session_state['route_data']
@@ -279,12 +280,10 @@ if output['last_clicked']:
     clicked_lat = output['last_clicked']['lat']
     clicked_lon = output['last_clicked']['lng']
     
-    # GPS가 없을 때는 클릭을 '출발지'로 인식 (임시)
     if not st.session_state['last_pos']:
         st.session_state['last_pos'] = (clicked_lat, clicked_lon)
         st.toast("📍 지도에서 출발지를 선택했습니다.")
         st.rerun()
     else:
-        # GPS가 있을 때는 클릭을 '도착지'로 인식
         st.session_state['end_point'] = (clicked_lat, clicked_lon)
         st.rerun()
