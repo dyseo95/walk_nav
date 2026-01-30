@@ -26,7 +26,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🏃 실시간 뚜벅이 네비 (v17.2)")
+st.title("🏃 실시간 뚜벅이 네비 (v17.3)")
 
 # 세션 상태 초기화
 if 'end_point' not in st.session_state: st.session_state['end_point'] = None
@@ -36,11 +36,12 @@ if 'last_pos' not in st.session_state: st.session_state['last_pos'] = None
 if 'msg' not in st.session_state: st.session_state['msg'] = "GPS 신호를 기다리는 중..."
 
 # ---------------------------------------------------------
-# 2. 실시간 GPS 엔진 (안전 장치 추가)
+# 2. 실시간 GPS 엔진 (수정됨)
 # ---------------------------------------------------------
 if get_geolocation:
-    # key를 변경하여 캐시 문제 해결
-    loc_data = get_geolocation(component_id=None, key="gps_v17_2")
+    # [FIX] component_id 파라미터 삭제 (에러 원인 제거)
+    # 단순히 key만 주면 됩니다.
+    loc_data = get_geolocation(key="gps_v17_3")
 
     if loc_data and isinstance(loc_data, dict) and 'coords' in loc_data:
         lat = loc_data['coords']['latitude']
@@ -54,7 +55,7 @@ if get_geolocation:
             st.rerun()
 
 # ---------------------------------------------------------
-# 3. 헬퍼 함수 (누락되었던 로직 복구)
+# 3. 헬퍼 함수
 # ---------------------------------------------------------
 def get_nearest_subway_exit(point, radius=200):
     try:
@@ -116,7 +117,6 @@ with col_btn:
 
 col_nav, col_reset = st.columns([3, 1])
 with col_nav:
-    # GPS가 잡혔고(last_pos), 목적지(end_point)가 있을 때만 활성화
     nav_ready = st.session_state['last_pos'] is not None and st.session_state['end_point'] is not None
     nav_start = st.button("🚀 경로 안내 시작", type="primary", disabled=not nav_ready)
 
@@ -127,13 +127,13 @@ with col_reset:
         st.rerun()
 
 # ---------------------------------------------------------
-# 5. 경로 계산 엔진 (누락 없는 풀버전)
+# 5. 경로 계산 엔진
 # ---------------------------------------------------------
 if nav_start:
     if st.session_state['last_pos'] and st.session_state['end_point']:
         with st.spinner("최적 경로 분석 중..."):
             try:
-                start = st.session_state['last_pos'] # 출발지는 내 위치!
+                start = st.session_state['last_pos']
                 end = st.session_state['end_point']
                 
                 start_exit = get_nearest_subway_exit(start)
