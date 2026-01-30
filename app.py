@@ -41,6 +41,7 @@ st.markdown("""
         border-radius: 8px !important;
         height: 40px !important;
         font-weight: bold !important;
+        width: 100%;
     }
     .stButton > button p { color: #ffffff !important; }
 
@@ -57,7 +58,7 @@ st.markdown("""
     .calorie-badge {
         background-color: #FFF8E1;
         color: #FF6F00 !important;
-        padding: 3px 8px;
+        padding: 2px 8px;
         border-radius: 10px;
         font-size: 0.8em;
         font-weight: bold;
@@ -68,17 +69,10 @@ st.markdown("""
     .block-container { 
         padding-top: 0.5rem !important; 
         padding-bottom: 2rem !important; 
-        padding-left: 0.5rem !important;
-        padding-right: 0.5rem !important;
     }
     
-    div[role="radiogroup"] {
-        display: flex;
-        flex-direction: row;
-        justify-content: space-around;
-        background-color: #f8f9fa;
-        padding: 5px;
-        border-radius: 8px;
+    /* 체크박스 가로 정렬 느낌 */
+    div[data-testid="stCheckbox"] {
         margin-bottom: 5px;
     }
 </style>
@@ -94,9 +88,8 @@ if 'end_name' not in st.session_state: st.session_state['end_name'] = ""
 if 'map_center' not in st.session_state: st.session_state['map_center'] = [37.5665, 126.9780]
 if 'route_data' not in st.session_state: st.session_state['route_data'] = None
 if 'last_pos' not in st.session_state: st.session_state['last_pos'] = None
-if 'gps_mode' not in st.session_state: st.session_state['gps_mode'] = True 
 if 'facility_data' not in st.session_state: st.session_state['facility_data'] = []
-# [New] 사용자가 지도를 찍어서 출발지를 바꿨는지 체크하는 플래그
+# [핵심] 수동 설정 여부를 기억하는 플래그 (True면 GPS 무시)
 if 'manual_start' not in st.session_state: st.session_state['manual_start'] = False 
 
 # ---------------------------------------------------------
@@ -124,41 +117,41 @@ def calculate_calories(minutes):
     if kcal < 1: kcal = 1
     return kcal
 
-def get_facilities(point, radius=500):
+def get_facilities(point, radius=500, types=[]):
+    """
+    types: ['cvs', 'wc', 'food'] 등 선택된 타입만 가져옴
+    """
     facilities = []
     try:
-        tags = {'amenity': ['toilets', 'cafe'], 'shop': ['convenience']}
+        tags = {}
+        if 'cvs' in types:
+            tags.setdefault('shop', []).append('convenience')
+        if 'wc' in types:
+            tags.setdefault('amenity', []).append('toilets')
+        if 'food' in types:
+            tags.setdefault('amenity', []).extend(['restaurant', 'cafe', 'fast_food'])
+
+        if not tags: return []
+
         bbox = ox.utils_geo.bbox_from_point(point, dist=radius)
         gdf = ox.features_from_bbox(bbox=bbox, tags=tags)
+        
         if not gdf.empty:
             for idx, row in gdf.iterrows():
-                amenity = row.get('amenity'); shop = row.get('shop')
+                amenity = row.get('amenity')
+                shop = row.get('shop')
                 name = row.get('name', '이름 없음')
+                
                 lat, lon = (row.geometry.centroid.y, row.geometry.centroid.x) if hasattr(row.geometry, 'centroid') else (row.geometry.y, row.geometry.x)
+                
                 icon, color = "question", "gray"
                 if amenity == 'toilets': icon, color = "restroom", "blue"
-                elif amenity == 'cafe': icon, color = "coffee", "brown"
                 elif shop == 'convenience': icon, color = "shopping-cart", "orange"
+                elif amenity in ['restaurant', 'cafe', 'fast_food']: icon, color = "cutlery", "red"
+                
                 facilities.append({'coords': [lat, lon], 'name': name, 'icon': icon, 'color': color})
     except: pass
     return facilities
-
-def get_nearest_subway_exit(point, radius=200):
-    try:
-        tags = {'railway': 'subway_entrance'}
-        bbox = ox.utils_geo.bbox_from_point(point, dist=radius)
-        entrances = ox.features_from_bbox(bbox=bbox, tags=tags)
-        if entrances.empty: return None
-        point_geom = Point(point[1], point[0])
-        min_dist = float('inf')
-        best_exit = None
-        for idx, row in entrances.iterrows():
-            exit_no = row.get('ref')
-            if not exit_no: continue
-            dist = row.geometry.centroid.distance(point_geom)
-            if dist < min_dist: min_dist = dist; best_exit = {'no': exit_no, 'coords': (row.geometry.centroid.y, row.geometry.centroid.x)}
-        return best_exit
-    except: return None
 
 def calculate_pedestrian_weight(G_proj, danger_zone_proj, avoid_stairs=False, avoid_danger=False):
     for u, v, k, data in G_proj.edges(keys=True, data=True):
@@ -180,68 +173,78 @@ def calculate_pedestrian_weight(G_proj, danger_zone_proj, avoid_stairs=False, av
     return G_proj
 
 # ---------------------------------------------------------
-# 4. GPS 엔진
+# 4. GPS 엔진 (로직 수정됨)
 # ---------------------------------------------------------
-if st.session_state['gps_mode'] and get_geolocation:
+if get_geolocation:
     try:
         loc_data = get_geolocation() 
         if loc_data and isinstance(loc_data, dict) and 'coords' in loc_data:
             lat = loc_data['coords']['latitude']; lon = loc_data['coords']['longitude']
             st.session_state['last_pos'] = (lat, lon)
+            
+            # [수정] 앱 처음 켜졌거나, '수동 모드'가 아닐 때만 GPS를 출발지로 덮어씀
             if 'init_gps' not in st.session_state:
-                st.session_state['map_center'] = [lat, lon]; st.session_state['init_gps'] = True; st.rerun()
-    except: st.session_state['gps_mode'] = False
+                st.session_state['map_center'] = [lat, lon]
+                st.session_state['start_point'] = (lat, lon) # 초기값
+                st.session_state['init_gps'] = True
+                st.rerun()
+            elif not st.session_state['manual_start']: 
+                # 수동 설정 안 했으면, 계속 내 위치 따라감 (실시간)
+                st.session_state['start_point'] = (lat, lon)
+                st.session_state['start_name'] = "내 위치"
+    except: pass
 
 # ---------------------------------------------------------
 # 5. UI Layout
 # ---------------------------------------------------------
 c_start, c_end = st.columns(2)
 with c_start:
-    # 출발지 placeholder를 상태에 따라 다르게 표시
-    s_ph = "지도 선택 위치" if st.session_state['manual_start'] else "현위치 (비우면 GPS)"
-    start_query = st.text_input("출발지", placeholder=s_ph, key="s_input")
+    # 수동 모드면 "지도 선택 위치"라고 표시
+    val_s = st.session_state['start_name'] if st.session_state['manual_start'] else "내 위치 (GPS)"
+    st.text_input("출발", value=val_s, disabled=True, key="disp_s")
 with c_end:
-    dest_query = st.text_input("도착지", placeholder="장소검색", key="e_input")
+    dest_query = st.text_input("도착", placeholder="장소 검색", key="e_input")
 
+# 버튼들
+c_search, c_reset = st.columns([3, 1])
+with c_search:
+    if st.button("🔍 경로 탐색"):
+        # 도착지 검색 로직
+        if dest_query.strip():
+            e_coords, e_name = get_coords_by_kakao(dest_query)
+            if e_coords:
+                st.session_state['end_point'] = e_coords
+                st.session_state['end_name'] = e_name
+                # 지도 중심 이동
+                if st.session_state['start_point']:
+                    mid_lat = (st.session_state['start_point'][0] + e_coords[0]) / 2
+                    mid_lon = (st.session_state['start_point'][1] + e_coords[1]) / 2
+                    st.session_state['map_center'] = [mid_lat, mid_lon]
+                st.rerun()
+with c_reset:
+    if st.button("🔄 복귀"):
+        # 수동 모드 해제 -> GPS로 복귀
+        st.session_state['manual_start'] = False
+        st.session_state['start_name'] = "내 위치"
+        st.session_state['start_point'] = st.session_state['last_pos']
+        st.rerun()
+
+# 클릭 모드 선택
 click_option = st.radio("👇 지도 클릭 모드:", ["도착지 찍기", "출발지 찍기"], horizontal=True)
 
-if st.button("🔍 경로 탐색", type="primary"):
-    # 1. 출발지 처리 로직 (우선순위: 입력창 > 지도클릭 > GPS)
-    if start_query.strip():
-        # 입력창에 글씨가 있으면 최우선
-        s_coords, s_name = get_coords_by_kakao(start_query)
-        if s_coords:
-            st.session_state['start_point'] = s_coords
-            st.session_state['start_name'] = s_name
-            st.session_state['manual_start'] = False # 텍스트 검색했으니 매뉴얼 모드 해제
-    else:
-        # 입력창이 비어있을 때
-        if st.session_state['manual_start']:
-            # 지도에서 찍은 적이 있으면 그 좌표 유지! (GPS로 덮어쓰지 않음)
-            pass 
-        elif st.session_state['last_pos']:
-            # 찍은 적도 없으면 GPS 사용
-            st.session_state['start_point'] = st.session_state['last_pos']
-            st.session_state['start_name'] = "내 위치"
-
-    # 2. 도착지 처리 로직
-    if dest_query.strip():
-        e_coords, e_name = get_coords_by_kakao(dest_query)
-        if e_coords:
-            st.session_state['end_point'] = e_coords
-            st.session_state['end_name'] = e_name
-            # 지도 중심 이동
-            if st.session_state['start_point']:
-                mid_lat = (st.session_state['start_point'][0] + e_coords[0]) / 2
-                mid_lon = (st.session_state['start_point'][1] + e_coords[1]) / 2
-                st.session_state['map_center'] = [mid_lat, mid_lon]
-            st.rerun()
-
-with st.expander("⚙️ 상세 옵션", expanded=False):
-    c1, c2, c3 = st.columns(3)
-    with c1: avoid_stairs = st.checkbox("계단 ❌", value=False)
-    with c2: avoid_danger = st.checkbox("유흥가 ❌", value=False)
-    with c3: show_facility = st.checkbox("편의점 🏪", value=False)
+# 옵션 (시설별 보기)
+with st.expander("⚙️ 시설 및 경로 옵션", expanded=False):
+    st.write("👀 **보고 싶은 시설 선택:**")
+    col_f1, col_f2, col_f3 = st.columns(3)
+    with col_f1: show_cvs = st.checkbox("🏪 편의점")
+    with col_f2: show_wc = st.checkbox("🚽 화장실")
+    with col_f3: show_food = st.checkbox("🍽️ 식당/카페")
+    
+    st.divider()
+    st.write("🚧 **경로 회피:**")
+    col_a1, col_a2 = st.columns(2)
+    with col_a1: avoid_stairs = st.checkbox("계단 피하기")
+    with col_a2: avoid_danger = st.checkbox("유흥가 우회")
 
 # ---------------------------------------------------------
 # 6. 경로 계산
@@ -256,13 +259,21 @@ if calc_ready:
         try:
             linear_dist = np.sqrt((start[0]-end[0])**2 + (start[1]-end[1])**2) * 111000
             
-            if show_facility: st.session_state['facility_data'] = get_facilities(start, radius=500)
-            else: st.session_state['facility_data'] = []
+            # 시설 필터링
+            fac_types = []
+            if show_cvs: fac_types.append('cvs')
+            if show_wc: fac_types.append('wc')
+            if show_food: fac_types.append('food')
+            
+            if fac_types:
+                st.session_state['facility_data'] = get_facilities(start, radius=500, types=fac_types)
+            else:
+                st.session_state['facility_data'] = []
 
             if linear_dist > 30000:
                 walk_time = int(linear_dist / 67); dist_str = format_distance(int(linear_dist))
                 kcal = calculate_calories(walk_time)
-                st.session_state['route_data'] = {'coords': [start, end], 'type': 'drone', 'time': walk_time, 'dist': int(linear_dist), 'dist_str': dist_str, 'kcal': kcal, 'msg': "장거리 직선 안내", 'danger_geojson': None, 'segments': [], 'special_points': [], 'subway_info': None}
+                st.session_state['route_data'] = {'coords': [start, end], 'type': 'drone', 'time': walk_time, 'dist': int(linear_dist), 'dist_str': dist_str, 'kcal': kcal, 'msg': "직선 경로 안내 (장거리)", 'danger_geojson': None, 'special_points': []}
             else:
                 mid_lat = (start[0] + end[0]) / 2; mid_lon = (start[1] + end[1]) / 2
                 radius = linear_dist / 2 + 1000 
@@ -286,12 +297,11 @@ if calc_ready:
                 orig = ox.distance.nearest_nodes(G, start[1], start[0]); dest = ox.distance.nearest_nodes(G, end[1], end[0])
                 
                 if orig == dest:
-                    dist_str = format_distance(int(linear_dist))
-                    kcal = 1
-                    st.session_state['route_data'] = {'coords': [start, end], 'type': 'micro', 'time': 1, 'dist': int(linear_dist), 'dist_str': dist_str, 'kcal': kcal, 'msg': "도착!", 'danger_geojson': None, 'segments': [], 'special_points': [], 'subway_info': None}
+                    dist_str = format_distance(int(linear_dist)); kcal = 1
+                    st.session_state['route_data'] = {'coords': [start, end], 'type': 'micro', 'time': 1, 'dist': int(linear_dist), 'dist_str': dist_str, 'kcal': kcal, 'msg': "도착!", 'danger_geojson': None, 'special_points': []}
                 else:
                     route = nx.shortest_path(G_proj, orig, dest, weight='walk_cost')
-                    res_coords = []; total_len = 0; segments = []; special_points = []
+                    res_coords = []; total_len = 0; special_points = []
                     
                     for u, v in zip(route[:-1], route[1:]):
                         edge = G.get_edge_data(u, v)[0]
@@ -304,37 +314,35 @@ if calc_ready:
                             elif edge.get('tunnel') == 'yes' and edge.get('layer', 0) < 0: name = "지하보도"; icon_type = 'road'
                             else: name = "직진"
                         if icon_type: special_points.append({'coords': point_coords, 'icon': icon_type, 'tooltip': name, 'color': 'orange'})
-                        seg_len = int(edge['length'])
-                        if not segments or segments[-1]['name'] != name: segments.append({'name': name, 'len': seg_len})
-                        else: segments[-1]['len'] += seg_len
                         if 'geometry' in edge: xs, ys = edge['geometry'].xy; res_coords.extend(zip(ys, xs))
                         else: res_coords.append((G.nodes[u]['y'], G.nodes[u]['x'])); res_coords.append((G.nodes[v]['y'], G.nodes[v]['x']))
                     
                     walk_time = int(total_len / 67); dist_str = format_distance(int(total_len))
                     kcal = calculate_calories(walk_time)
-                    s_exit = get_nearest_subway_exit(start); e_exit = get_nearest_subway_exit(end)
-                    st.session_state['route_data'] = {'coords': res_coords, 'type': 'normal', 'time': walk_time, 'dist': int(total_len), 'dist_str': dist_str, 'kcal': kcal, 'msg': "안내 중", 'danger_geojson': danger_geojson, 'segments': segments, 'special_points': special_points, 'subway_info': {'start': s_exit, 'end': e_exit}}
+                    st.session_state['route_data'] = {'coords': res_coords, 'type': 'normal', 'time': walk_time, 'dist': int(total_len), 'dist_str': dist_str, 'kcal': kcal, 'msg': "안내 중", 'danger_geojson': danger_geojson, 'special_points': special_points}
         except Exception as e: st.error(f"실패: {e}")
 
 # ---------------------------------------------------------
-# 7. 지도 및 결과 표시
+# 7. 지도 표시
 # ---------------------------------------------------------
 m = folium.Map(location=st.session_state['map_center'], zoom_start=15, tiles=None)
 folium.TileLayer('https://xdworld.vworld.kr/2d/Base/service/{z}/{x}/{y}.png', attr='VWorld', name='VWorld').add_to(m)
 
-# 내 실제 위치 (초록색)
+# 내 위치 (초록)
 if st.session_state['last_pos']:
     folium.CircleMarker(location=st.session_state['last_pos'], radius=8, color='white', fill=True, fill_color='#03C75A', fill_opacity=1, tooltip="내 현재 위치").add_to(m)
 
-# 출발/도착 마커
+# 출발(파랑) / 도착(빨강)
 if st.session_state['start_point']:
     folium.Marker(st.session_state['start_point'], icon=folium.Icon(color='blue', icon='play'), tooltip="출발").add_to(m)
 if st.session_state['end_point']:
     folium.Marker(st.session_state['end_point'], icon=folium.Icon(color='red', icon='flag'), tooltip="도착").add_to(m)
 
+# 시설 아이콘
 if st.session_state.get('facility_data'):
     for fac in st.session_state['facility_data']: folium.Marker(location=fac['coords'], icon=folium.Icon(color=fac['color'], icon=fac['icon'], prefix='fa'), tooltip=fac['name']).add_to(m)
 
+# 경로
 if st.session_state.get('route_data'):
     data = st.session_state['route_data']
     if data['danger_geojson']: folium.GeoJson(data['danger_geojson'], style_function=lambda x: {'color': 'red', 'fillColor': 'red', 'fillOpacity': 0.2}).add_to(m)
@@ -345,20 +353,20 @@ if st.session_state.get('route_data'):
 
 output = st_folium(m, width="100%", height=400, key="main_map")
 
-# [핵심] 지도 클릭 로직
+# [핵심] 지도 클릭 로직 (고정)
 if output['last_clicked']:
     clicked = (output['last_clicked']['lat'], output['last_clicked']['lng'])
     if click_option == "도착지 찍기":
         st.session_state['end_point'] = clicked
         st.session_state['end_name'] = "지도 선택 위치"
-        st.toast("🏁 도착지가 설정되었습니다.")
+        st.toast("🏁 도착지 설정 완료!")
         st.rerun()
     else:
-        # 여기가 중요: 출발지를 찍으면 manual_start 플래그를 True로!
+        # 여기가 중요! 출발지를 찍으면 manual_start = True가 되어 GPS 무시함
         st.session_state['start_point'] = clicked
         st.session_state['start_name'] = "지도 선택 위치"
         st.session_state['manual_start'] = True 
-        st.toast("📍 출발지가 설정되었습니다.")
+        st.toast("📍 출발지 설정 완료! (내 위치 무시)")
         st.rerun()
 
 # 결과 카드
@@ -371,5 +379,6 @@ if st.session_state['route_data']:
             <span class="calorie-badge">🔥 {data['kcal']} kcal</span>
         </h4>
         <p style="margin:5px 0 0 0; font-size:14px;">{st.session_state['start_name']} ➡️ {st.session_state['end_name']}</p>
+        <p style="margin:0; font-size:12px; color:#666;">{data['msg']}</p>
     </div>
     """, unsafe_allow_html=True)
