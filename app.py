@@ -15,17 +15,15 @@ except ImportError:
     get_geolocation = None
 
 # ---------------------------------------------------------
-# 1. 디자인 (CSS) - 모바일 최적화 & 블랙 텍스트
+# 1. 디자인 (CSS)
 # ---------------------------------------------------------
 st.set_page_config(page_title="뚜벅이 NAVI", layout="wide", initial_sidebar_state="collapsed")
 
 st.markdown("""
 <style>
-    /* 배경 & 텍스트 강제 설정 */
     .stApp, [data-testid="stAppViewContainer"] { background-color: #ffffff !important; }
     h1, h2, h3, h4, h5, h6, p, span, div, label, input { color: #000000 !important; }
     
-    /* 입력창 스타일 */
     .stTextInput input {
         background-color: #f0f2f5 !important; 
         color: #000000 !important;
@@ -36,19 +34,16 @@ st.markdown("""
         font-size: 15px !important;
     }
 
-    /* 버튼 스타일 */
     .stButton > button {
         background-color: #03C75A !important;
         color: #ffffff !important;
         border: none !important;
         border-radius: 8px !important;
         height: 40px !important;
-        font-size: 15px !important;
         font-weight: bold !important;
     }
     .stButton > button p { color: #ffffff !important; }
 
-    /* 결과 카드 */
     .result-card {
         background-color: #ffffff;
         border: 1px solid #ddd;
@@ -59,7 +54,6 @@ st.markdown("""
         border-left: 5px solid #03C75A;
     }
     
-    /* 칼로리 뱃지 스타일 */
     .calorie-badge {
         background-color: #FFF8E1;
         color: #FF6F00 !important;
@@ -71,7 +65,6 @@ st.markdown("""
         margin-left: 5px;
     }
 
-    /* 모바일 여백 조정 */
     .block-container { 
         padding-top: 0.5rem !important; 
         padding-bottom: 2rem !important; 
@@ -79,7 +72,6 @@ st.markdown("""
         padding-right: 0.5rem !important;
     }
     
-    /* 라디오 버튼 가로 정렬 */
     div[role="radiogroup"] {
         display: flex;
         flex-direction: row;
@@ -104,6 +96,8 @@ if 'route_data' not in st.session_state: st.session_state['route_data'] = None
 if 'last_pos' not in st.session_state: st.session_state['last_pos'] = None
 if 'gps_mode' not in st.session_state: st.session_state['gps_mode'] = True 
 if 'facility_data' not in st.session_state: st.session_state['facility_data'] = []
+# [New] 사용자가 지도를 찍어서 출발지를 바꿨는지 체크하는 플래그
+if 'manual_start' not in st.session_state: st.session_state['manual_start'] = False 
 
 # ---------------------------------------------------------
 # 3. 헬퍼 함수
@@ -126,9 +120,6 @@ def format_distance(meters):
     return f"{meters}m"
 
 def calculate_calories(minutes):
-    """
-    보통 성인 걷기 칼로리 소모량: 약 3.5 kcal/분
-    """
     kcal = int(minutes * 3.3)
     if kcal < 1: kcal = 1
     return kcal
@@ -202,45 +193,51 @@ if st.session_state['gps_mode'] and get_geolocation:
     except: st.session_state['gps_mode'] = False
 
 # ---------------------------------------------------------
-# 5. UI Layout (입력창 + 클릭 모드 설정)
+# 5. UI Layout
 # ---------------------------------------------------------
-# 입력창 2개
 c_start, c_end = st.columns(2)
 with c_start:
-    start_query = st.text_input("출발지", placeholder="현위치", key="s_input")
+    # 출발지 placeholder를 상태에 따라 다르게 표시
+    s_ph = "지도 선택 위치" if st.session_state['manual_start'] else "현위치 (비우면 GPS)"
+    start_query = st.text_input("출발지", placeholder=s_ph, key="s_input")
 with c_end:
     dest_query = st.text_input("도착지", placeholder="장소검색", key="e_input")
 
-# 지도 클릭 모드 선택 (라디오 버튼)
-click_option = st.radio("👇 지도 클릭 시 설정:", ["도착지 찍기", "출발지 찍기"], horizontal=True)
+click_option = st.radio("👇 지도 클릭 모드:", ["도착지 찍기", "출발지 찍기"], horizontal=True)
 
-# 검색 버튼
 if st.button("🔍 경로 탐색", type="primary"):
-    # 출발지
+    # 1. 출발지 처리 로직 (우선순위: 입력창 > 지도클릭 > GPS)
     if start_query.strip():
+        # 입력창에 글씨가 있으면 최우선
         s_coords, s_name = get_coords_by_kakao(start_query)
         if s_coords:
             st.session_state['start_point'] = s_coords
             st.session_state['start_name'] = s_name
+            st.session_state['manual_start'] = False # 텍스트 검색했으니 매뉴얼 모드 해제
     else:
-        if st.session_state['last_pos']:
+        # 입력창이 비어있을 때
+        if st.session_state['manual_start']:
+            # 지도에서 찍은 적이 있으면 그 좌표 유지! (GPS로 덮어쓰지 않음)
+            pass 
+        elif st.session_state['last_pos']:
+            # 찍은 적도 없으면 GPS 사용
             st.session_state['start_point'] = st.session_state['last_pos']
             st.session_state['start_name'] = "내 위치"
 
-    # 도착지
+    # 2. 도착지 처리 로직
     if dest_query.strip():
         e_coords, e_name = get_coords_by_kakao(dest_query)
         if e_coords:
             st.session_state['end_point'] = e_coords
             st.session_state['end_name'] = e_name
+            # 지도 중심 이동
             if st.session_state['start_point']:
                 mid_lat = (st.session_state['start_point'][0] + e_coords[0]) / 2
                 mid_lon = (st.session_state['start_point'][1] + e_coords[1]) / 2
                 st.session_state['map_center'] = [mid_lat, mid_lon]
             st.rerun()
 
-# 옵션 (접기)
-with st.expander("⚙️ 상세 옵션 (계단/유흥가)", expanded=False):
+with st.expander("⚙️ 상세 옵션", expanded=False):
     c1, c2, c3 = st.columns(3)
     with c1: avoid_stairs = st.checkbox("계단 ❌", value=False)
     with c2: avoid_danger = st.checkbox("유흥가 ❌", value=False)
@@ -264,8 +261,8 @@ if calc_ready:
 
             if linear_dist > 30000:
                 walk_time = int(linear_dist / 67); dist_str = format_distance(int(linear_dist))
-                kcal = calculate_calories(walk_time) # 칼로리 계산
-                st.session_state['route_data'] = {'coords': [start, end], 'type': 'drone', 'time': walk_time, 'dist': int(linear_dist), 'dist_str': dist_str, 'kcal': kcal, 'msg': "거리가 멀어 직선 안내", 'danger_geojson': None, 'segments': [], 'special_points': [], 'subway_info': None}
+                kcal = calculate_calories(walk_time)
+                st.session_state['route_data'] = {'coords': [start, end], 'type': 'drone', 'time': walk_time, 'dist': int(linear_dist), 'dist_str': dist_str, 'kcal': kcal, 'msg': "장거리 직선 안내", 'danger_geojson': None, 'segments': [], 'special_points': [], 'subway_info': None}
             else:
                 mid_lat = (start[0] + end[0]) / 2; mid_lon = (start[1] + end[1]) / 2
                 radius = linear_dist / 2 + 1000 
@@ -314,7 +311,7 @@ if calc_ready:
                         else: res_coords.append((G.nodes[u]['y'], G.nodes[u]['x'])); res_coords.append((G.nodes[v]['y'], G.nodes[v]['x']))
                     
                     walk_time = int(total_len / 67); dist_str = format_distance(int(total_len))
-                    kcal = calculate_calories(walk_time) # 칼로리
+                    kcal = calculate_calories(walk_time)
                     s_exit = get_nearest_subway_exit(start); e_exit = get_nearest_subway_exit(end)
                     st.session_state['route_data'] = {'coords': res_coords, 'type': 'normal', 'time': walk_time, 'dist': int(total_len), 'dist_str': dist_str, 'kcal': kcal, 'msg': "안내 중", 'danger_geojson': danger_geojson, 'segments': segments, 'special_points': special_points, 'subway_info': {'start': s_exit, 'end': e_exit}}
         except Exception as e: st.error(f"실패: {e}")
@@ -325,9 +322,9 @@ if calc_ready:
 m = folium.Map(location=st.session_state['map_center'], zoom_start=15, tiles=None)
 folium.TileLayer('https://xdworld.vworld.kr/2d/Base/service/{z}/{x}/{y}.png', attr='VWorld', name='VWorld').add_to(m)
 
-# 내 위치
+# 내 실제 위치 (초록색)
 if st.session_state['last_pos']:
-    folium.CircleMarker(location=st.session_state['last_pos'], radius=10, color='white', fill=True, fill_color='#03C75A', fill_opacity=1, tooltip="내 현재 위치").add_to(m)
+    folium.CircleMarker(location=st.session_state['last_pos'], radius=8, color='white', fill=True, fill_color='#03C75A', fill_opacity=1, tooltip="내 현재 위치").add_to(m)
 
 # 출발/도착 마커
 if st.session_state['start_point']:
@@ -346,22 +343,25 @@ if st.session_state.get('route_data'):
         for sp in data['special_points']: folium.Marker(sp['coords'], icon=folium.Icon(color=sp['color'], icon=sp['icon'], prefix='fa'), tooltip=sp['tooltip']).add_to(m)
         m.fit_bounds(data['coords'])
 
-# 지도 (클릭 활성화)
 output = st_folium(m, width="100%", height=400, key="main_map")
 
 # [핵심] 지도 클릭 로직
 if output['last_clicked']:
     clicked = (output['last_clicked']['lat'], output['last_clicked']['lng'])
     if click_option == "도착지 찍기":
-        st.session_state['end_point'] = clicked; st.session_state['end_name'] = "지도 선택"
-        st.toast("🏁 도착지를 설정했습니다.")
+        st.session_state['end_point'] = clicked
+        st.session_state['end_name'] = "지도 선택 위치"
+        st.toast("🏁 도착지가 설정되었습니다.")
         st.rerun()
     else:
-        st.session_state['start_point'] = clicked; st.session_state['start_name'] = "지도 선택"
-        st.toast("📍 출발지를 설정했습니다.")
+        # 여기가 중요: 출발지를 찍으면 manual_start 플래그를 True로!
+        st.session_state['start_point'] = clicked
+        st.session_state['start_name'] = "지도 선택 위치"
+        st.session_state['manual_start'] = True 
+        st.toast("📍 출발지가 설정되었습니다.")
         st.rerun()
 
-# 결과 카드 (칼로리 추가)
+# 결과 카드
 if st.session_state['route_data']:
     data = st.session_state['route_data']
     st.markdown(f"""
