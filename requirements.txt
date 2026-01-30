@@ -9,3 +9,4 @@ geopandas
 shapely
 scikit-learn
 gTTS
+requests
