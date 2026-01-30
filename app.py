@@ -105,13 +105,23 @@ def format_distance(meters):
     if meters >= 1000: return f"{meters/1000:.1f}km"
     return f"{meters}m"
 
+# [New] 시간 포맷팅 함수 (분 -> 시간 분)
+def format_time(minutes):
+    if minutes < 60:
+        return f"{minutes}분"
+    else:
+        hours = minutes // 60
+        mins = minutes % 60
+        if mins == 0:
+            return f"{hours}시간"
+        return f"{hours}시간 {mins}분"
+
 def calculate_calories(minutes):
     kcal = int(minutes * 3.3)
     if kcal < 1: kcal = 1
     return kcal
 
 def is_same_location(loc1, loc2, threshold=0.0005):
-    """클릭한 위치가 기존 마커와 같은지 확인 (약 50m 오차 허용)"""
     if not loc1 or not loc2: return False
     dist = np.sqrt((loc1[0]-loc2[0])**2 + (loc1[1]-loc2[1])**2)
     return dist < threshold
@@ -155,9 +165,9 @@ def calculate_pedestrian_weight(G_proj, danger_zone_proj, avoid_stairs=False, av
         
         if highway == 'steps': penalty = 100.0 if avoid_stairs else 2.0 
         
-        # 유흥가 회피 (경로 차단 수준이 아니라 높은 페널티로 우회 유도)
+        # 유흥가 회피 (Fallback을 위해 차단이 아닌 고가중치 부여)
         if avoid_danger and danger_zone_proj and 'geometry' in data:
-            if data['geometry'].intersects(danger_zone_proj): penalty = 10.0 # 10배 거리로 인식
+            if data['geometry'].intersects(danger_zone_proj): penalty = 20.0 
 
         data['walk_cost'] = base_cost * penalty
     return G_proj
@@ -188,11 +198,9 @@ if get_geolocation:
 # 입력창
 c_start, c_end = st.columns([1, 1])
 with c_start:
-    # 출발지 입력창 옆에 "지도에서 선택" 체크박스를 작게 배치할 수 없으니,
-    # placeholder로 상태 표시
     val_s = st.session_state['start_name'] if st.session_state['manual_start'] else "내 위치"
     st.text_input("출발", value=val_s, disabled=True, key="disp_s")
-    # 작게 "지도에서 출발지 찍기" 체크박스 (Radio Button 대체)
+    # 출발지 설정용 체크박스 (작게)
     set_start_mode = st.checkbox("📍 지도에서 출발지 찍기", value=False)
 
 with c_end:
@@ -218,7 +226,7 @@ with st.expander("⚙️ 시설 및 경로 옵션", expanded=False):
     st.divider()
     col_a1, col_a2 = st.columns(2)
     with col_a1: avoid_stairs = st.checkbox("계단 피하기")
-    with col_a2: avoid_danger = st.checkbox("유흥가 우회", value=True) # 기본값 True 추천
+    with col_a2: avoid_danger = st.checkbox("유흥가 우회", value=True)
 
 # ---------------------------------------------------------
 # 6. 로직 처리
@@ -246,10 +254,17 @@ if do_search:
 
                 linear_dist = np.sqrt((start[0]-end[0])**2 + (start[1]-end[1])**2) * 111000
                 
+                # 장거리 (30km 이상)
                 if linear_dist > 30000:
-                    walk_time = int(linear_dist / 67); dist_str = format_distance(int(linear_dist))
+                    walk_time = int(linear_dist / 67)
+                    dist_str = format_distance(int(linear_dist))
+                    time_str = format_time(walk_time) # [New] 시간 변환
                     kcal = calculate_calories(walk_time)
-                    st.session_state['route_data'] = {'coords': [start, end], 'type': 'drone', 'time': walk_time, 'dist': int(linear_dist), 'dist_str': dist_str, 'kcal': kcal, 'msg': "장거리 직선 안내", 'danger_geojson': None, 'special_points': []}
+                    st.session_state['route_data'] = {
+                        'coords': [start, end], 'type': 'drone', 
+                        'time_str': time_str, 'dist_str': dist_str, 
+                        'kcal': kcal, 'msg': "장거리 직선 안내", 'danger_geojson': None, 'special_points': []
+                    }
                 else:
                     mid_lat = (start[0] + end[0]) / 2; mid_lon = (start[1] + end[1]) / 2
                     radius = linear_dist / 2 + 1000 
@@ -273,15 +288,18 @@ if do_search:
                     orig = ox.distance.nearest_nodes(G, start[1], start[0]); dest = ox.distance.nearest_nodes(G, end[1], end[0])
                     
                     if orig == dest:
-                        dist_str = format_distance(int(linear_dist)); kcal = 1
-                        st.session_state['route_data'] = {'coords': [start, end], 'type': 'micro', 'time': 1, 'dist': int(linear_dist), 'dist_str': dist_str, 'kcal': kcal, 'msg': "도착!", 'danger_geojson': None, 'special_points': []}
+                        dist_str = format_distance(int(linear_dist))
+                        st.session_state['route_data'] = {
+                            'coords': [start, end], 'type': 'micro', 
+                            'time_str': "1분", 'dist_str': dist_str, 'kcal': 1, 
+                            'msg': "도착!", 'danger_geojson': None, 'special_points': []
+                        }
                     else:
-                        # [핵심] 안전 경로 실패 시 일반 경로 Fallback 로직
+                        # [핵심] Fallback Logic
                         try:
                             route = nx.shortest_path(G_proj, orig, dest, weight='walk_cost')
                             msg = "안심 경로 안내 중"
                         except nx.NetworkXNoPath:
-                            # 길을 못 찾으면 일반 거리 우선으로 재탐색
                             route = nx.shortest_path(G_proj, orig, dest, weight='length')
                             msg = "⚠️ 안전 경로가 없어 최단 경로로 안내합니다."
                         
@@ -300,8 +318,13 @@ if do_search:
                             else: res_coords.append((G.nodes[u]['y'], G.nodes[u]['x'])); res_coords.append((G.nodes[v]['y'], G.nodes[v]['x']))
                         
                         walk_time = int(total_len / 67); dist_str = format_distance(int(total_len))
+                        time_str = format_time(walk_time) # [New] 시간 변환
                         kcal = calculate_calories(walk_time)
-                        st.session_state['route_data'] = {'coords': res_coords, 'type': 'normal', 'time': walk_time, 'dist': int(total_len), 'dist_str': dist_str, 'kcal': kcal, 'msg': msg, 'danger_geojson': danger_geojson, 'special_points': special_points}
+                        st.session_state['route_data'] = {
+                            'coords': res_coords, 'type': 'normal', 
+                            'time_str': time_str, 'dist_str': dist_str, 
+                            'kcal': kcal, 'msg': msg, 'danger_geojson': danger_geojson, 'special_points': special_points
+                        }
             except Exception as e: st.error(f"경로 탐색 실패: {e}")
 
 # ---------------------------------------------------------
@@ -314,7 +337,7 @@ folium.TileLayer('https://xdworld.vworld.kr/2d/Base/service/{z}/{x}/{y}.png', at
 if st.session_state['last_pos']:
     folium.CircleMarker(location=st.session_state['last_pos'], radius=8, color='white', fill=True, fill_color='#03C75A', fill_opacity=1, tooltip="내 현재 위치").add_to(m)
 
-# 출발/도착 마커 (클릭 시 취소 툴팁)
+# 출발/도착 마커
 if st.session_state['start_point']:
     folium.Marker(st.session_state['start_point'], icon=folium.Icon(color='blue', icon='play'), tooltip="출발지 (클릭 시 취소)").add_to(m)
 if st.session_state['end_point']:
@@ -337,41 +360,41 @@ output = st_folium(m, width="100%", height=400, key="main_map")
 if output['last_clicked']:
     clicked = (output['last_clicked']['lat'], output['last_clicked']['lng'])
     
-    # 1. 출발지 설정 모드인지 확인
+    # 1. 출발지 모드 (체크박스 ON)
     if set_start_mode:
-        # 기존 출발지랑 같은 곳 클릭했으면 취소
         if is_same_location(clicked, st.session_state['start_point']):
-            st.session_state['start_point'] = st.session_state['last_pos'] # GPS로 복귀
+            # 같은 곳 클릭 -> 취소 (GPS 복귀)
+            st.session_state['start_point'] = st.session_state['last_pos']
             st.session_state['start_name'] = "내 위치"
             st.session_state['manual_start'] = False
-            st.toast("출발지 설정 취소 (GPS 복귀)")
+            st.toast("출발지 취소 (GPS 복귀)")
         else:
             st.session_state['start_point'] = clicked
             st.session_state['start_name'] = "지도 선택"
             st.session_state['manual_start'] = True
-            st.toast("📍 출발지 설정됨")
+            st.toast("📍 출발지 설정")
         st.rerun()
         
-    # 2. 아니면 기본적으로 도착지 설정
+    # 2. 도착지 모드 (기본값)
     else:
-        # 기존 도착지랑 같은 곳 클릭했으면 취소
         if is_same_location(clicked, st.session_state['end_point']):
+            # 같은 곳 클릭 -> 취소
             st.session_state['end_point'] = None
             st.session_state['end_name'] = ""
-            st.toast("도착지 취소됨")
+            st.toast("도착지 취소")
         else:
             st.session_state['end_point'] = clicked
             st.session_state['end_name'] = "지도 선택"
-            st.toast("🏁 도착지 설정됨")
+            st.toast("🏁 도착지 설정")
         st.rerun()
 
-# 결과 카드
+# 결과 카드 (시간 변환 적용)
 if st.session_state['route_data']:
     data = st.session_state['route_data']
     st.markdown(f"""
     <div class="result-card">
         <h4 style="margin:0; color:#03C75A; display:flex; align-items:center;">
-            {data['time']}분 ({data['dist_str']}) 
+            {data['time_str']} ({data['dist_str']}) 
             <span class="calorie-badge">🔥 {data['kcal']} kcal</span>
         </h4>
         <p style="margin:5px 0 0 0; font-size:14px;">{st.session_state['start_name']} ➡️ {st.session_state['end_name']}</p>
