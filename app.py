@@ -73,7 +73,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 2. 상태 초기화 (Init State)
+# 2. 상태 초기화
 # ---------------------------------------------------------
 if 'start_point' not in st.session_state: st.session_state['start_point'] = None
 if 'end_point' not in st.session_state: st.session_state['end_point'] = None
@@ -110,20 +110,19 @@ def calculate_calories(minutes):
     if kcal < 1: kcal = 1
     return kcal
 
+def is_same_location(loc1, loc2, threshold=0.0005):
+    """클릭한 위치가 기존 마커와 같은지 확인 (약 50m 오차 허용)"""
+    if not loc1 or not loc2: return False
+    dist = np.sqrt((loc1[0]-loc2[0])**2 + (loc1[1]-loc2[1])**2)
+    return dist < threshold
+
 def get_facilities(point, radius=500, types=[]):
-    """
-    types: ['cvs', 'wc', 'food']
-    """
     facilities = []
     try:
         tags = {}
-        if 'cvs' in types:
-            tags.setdefault('shop', []).append('convenience')
-        if 'wc' in types:
-            tags.setdefault('amenity', []).append('toilets')
-        if 'food' in types:
-            tags.setdefault('amenity', []).extend(['restaurant', 'cafe', 'fast_food'])
-
+        if 'cvs' in types: tags.setdefault('shop', []).append('convenience')
+        if 'wc' in types: tags.setdefault('amenity', []).append('toilets')
+        if 'food' in types: tags.setdefault('amenity', []).extend(['restaurant', 'cafe', 'fast_food'])
         if not tags: return []
 
         bbox = ox.utils_geo.bbox_from_point(point, dist=radius)
@@ -131,17 +130,13 @@ def get_facilities(point, radius=500, types=[]):
         
         if not gdf.empty:
             for idx, row in gdf.iterrows():
-                amenity = row.get('amenity')
-                shop = row.get('shop')
+                amenity = row.get('amenity'); shop = row.get('shop')
                 name = row.get('name', '이름 없음')
-                
                 lat, lon = (row.geometry.centroid.y, row.geometry.centroid.x) if hasattr(row.geometry, 'centroid') else (row.geometry.y, row.geometry.x)
-                
                 icon, color = "question", "gray"
                 if amenity == 'toilets': icon, color = "restroom", "blue"
                 elif shop == 'convenience': icon, color = "shopping-cart", "orange"
                 elif amenity in ['restaurant', 'cafe', 'fast_food']: icon, color = "cutlery", "red"
-                
                 facilities.append({'coords': [lat, lon], 'name': name, 'icon': icon, 'color': color})
     except: pass
     return facilities
@@ -159,14 +154,16 @@ def calculate_pedestrian_weight(G_proj, danger_zone_proj, avoid_stairs=False, av
         elif highway in ['primary', 'secondary', 'tertiary', 'trunk']: penalty = 1.0 
         
         if highway == 'steps': penalty = 100.0 if avoid_stairs else 2.0 
+        
+        # 유흥가 회피 (경로 차단 수준이 아니라 높은 페널티로 우회 유도)
         if avoid_danger and danger_zone_proj and 'geometry' in data:
-            if data['geometry'].intersects(danger_zone_proj): penalty = 50.0 
+            if data['geometry'].intersects(danger_zone_proj): penalty = 10.0 # 10배 거리로 인식
 
         data['walk_cost'] = base_cost * penalty
     return G_proj
 
 # ---------------------------------------------------------
-# 4. GPS 엔진 (수동모드 시 업데이트 차단)
+# 4. GPS 엔진
 # ---------------------------------------------------------
 if get_geolocation:
     try:
@@ -175,13 +172,11 @@ if get_geolocation:
             lat = loc_data['coords']['latitude']; lon = loc_data['coords']['longitude']
             st.session_state['last_pos'] = (lat, lon)
             
-            # 처음 접속 시에만 내 위치로 초기화
             if 'init_gps' not in st.session_state:
                 st.session_state['map_center'] = [lat, lon]
                 st.session_state['start_point'] = (lat, lon)
                 st.session_state['init_gps'] = True
                 st.rerun()
-            # 수동 모드가 아닐 때만 GPS 추적
             elif not st.session_state['manual_start']: 
                 st.session_state['start_point'] = (lat, lon)
                 st.session_state['start_name'] = "내 위치"
@@ -191,11 +186,15 @@ if get_geolocation:
 # 5. UI Layout
 # ---------------------------------------------------------
 # 입력창
-c_start, c_end = st.columns(2)
+c_start, c_end = st.columns([1, 1])
 with c_start:
-    val_s = st.session_state['start_name'] if st.session_state['manual_start'] else "내 위치 (GPS)"
-    # 보여주기용 input (실제 값은 session_state에 있음)
+    # 출발지 입력창 옆에 "지도에서 선택" 체크박스를 작게 배치할 수 없으니,
+    # placeholder로 상태 표시
+    val_s = st.session_state['start_name'] if st.session_state['manual_start'] else "내 위치"
     st.text_input("출발", value=val_s, disabled=True, key="disp_s")
+    # 작게 "지도에서 출발지 찍기" 체크박스 (Radio Button 대체)
+    set_start_mode = st.checkbox("📍 지도에서 출발지 찍기", value=False)
+
 with c_end:
     dest_query = st.text_input("도착", placeholder="장소 검색", key="e_input")
 
@@ -210,51 +209,41 @@ with c_reset:
         st.session_state['start_point'] = st.session_state['last_pos']
         st.rerun()
 
-# 클릭 모드
-click_option = st.radio("👇 지도 클릭 모드:", ["도착지 찍기", "출발지 찍기"], horizontal=True)
-
-# 옵션 (시설 필터링)
+# 옵션
 with st.expander("⚙️ 시설 및 경로 옵션", expanded=False):
     col_f1, col_f2, col_f3 = st.columns(3)
     with col_f1: show_cvs = st.checkbox("🏪 편의점")
     with col_f2: show_wc = st.checkbox("🚽 화장실")
     with col_f3: show_food = st.checkbox("🍽️ 식당")
-    
     st.divider()
     col_a1, col_a2 = st.columns(2)
     with col_a1: avoid_stairs = st.checkbox("계단 피하기")
-    with col_a2: avoid_danger = st.checkbox("유흥가 우회")
+    with col_a2: avoid_danger = st.checkbox("유흥가 우회", value=True) # 기본값 True 추천
 
 # ---------------------------------------------------------
-# 6. 로직 처리 (버튼 눌렀을 때만 실행)
+# 6. 로직 처리
 # ---------------------------------------------------------
 if do_search:
-    # 1. 도착지 텍스트 검색 처리
     if dest_query.strip():
         e_coords, e_name = get_coords_by_kakao(dest_query)
         if e_coords:
             st.session_state['end_point'] = e_coords
             st.session_state['end_name'] = e_name
     
-    # 2. 경로 계산 및 시설 로딩
     if st.session_state['start_point'] and st.session_state['end_point']:
         start = st.session_state['start_point']
         end = st.session_state['end_point']
         
-        with st.spinner("경로 계산 중..."):
+        with st.spinner("최적 경로 계산 중..."):
             try:
-                # 시설 로딩 (경로 계산과 별개로)
+                # 시설
                 fac_types = []
                 if show_cvs: fac_types.append('cvs')
                 if show_wc: fac_types.append('wc')
                 if show_food: fac_types.append('food')
-                
-                if fac_types:
-                    st.session_state['facility_data'] = get_facilities(start, radius=500, types=fac_types)
-                else:
-                    st.session_state['facility_data'] = []
+                if fac_types: st.session_state['facility_data'] = get_facilities(start, radius=500, types=fac_types)
+                else: st.session_state['facility_data'] = []
 
-                # 경로 계산
                 linear_dist = np.sqrt((start[0]-end[0])**2 + (start[1]-end[1])**2) * 111000
                 
                 if linear_dist > 30000:
@@ -264,7 +253,7 @@ if do_search:
                 else:
                     mid_lat = (start[0] + end[0]) / 2; mid_lon = (start[1] + end[1]) / 2
                     radius = linear_dist / 2 + 1000 
-                    ox.settings.timeout = 60
+                    ox.settings.timeout = 30
                     G = ox.graph_from_point((mid_lat, mid_lon), dist=radius, network_type='all')
                     G_proj = ox.project_graph(G)
                     
@@ -275,7 +264,7 @@ if do_search:
                             bbox = ox.utils_geo.bbox_from_point((mid_lat, mid_lon), dist=radius)
                             gdf = ox.features_from_bbox(bbox=bbox, tags=tags)
                             if not gdf.empty: 
-                                danger_poly_proj = gdf.to_crs(G_proj.graph['crs']).geometry.buffer(20).union_all()
+                                danger_poly_proj = gdf.to_crs(G_proj.graph['crs']).geometry.buffer(15).union_all()
                                 danger_poly_vis = gdf.geometry.union_all()
                                 if not danger_poly_vis.is_empty: danger_geojson = gpd.GeoSeries([danger_poly_vis]).__geo_interface__
                     except: pass
@@ -287,7 +276,15 @@ if do_search:
                         dist_str = format_distance(int(linear_dist)); kcal = 1
                         st.session_state['route_data'] = {'coords': [start, end], 'type': 'micro', 'time': 1, 'dist': int(linear_dist), 'dist_str': dist_str, 'kcal': kcal, 'msg': "도착!", 'danger_geojson': None, 'special_points': []}
                     else:
-                        route = nx.shortest_path(G_proj, orig, dest, weight='walk_cost')
+                        # [핵심] 안전 경로 실패 시 일반 경로 Fallback 로직
+                        try:
+                            route = nx.shortest_path(G_proj, orig, dest, weight='walk_cost')
+                            msg = "안심 경로 안내 중"
+                        except nx.NetworkXNoPath:
+                            # 길을 못 찾으면 일반 거리 우선으로 재탐색
+                            route = nx.shortest_path(G_proj, orig, dest, weight='length')
+                            msg = "⚠️ 안전 경로가 없어 최단 경로로 안내합니다."
+                        
                         res_coords = []; total_len = 0; special_points = []
                         for u, v in zip(route[:-1], route[1:]):
                             edge = G.get_edge_data(u, v)[0]
@@ -304,8 +301,8 @@ if do_search:
                         
                         walk_time = int(total_len / 67); dist_str = format_distance(int(total_len))
                         kcal = calculate_calories(walk_time)
-                        st.session_state['route_data'] = {'coords': res_coords, 'type': 'normal', 'time': walk_time, 'dist': int(total_len), 'dist_str': dist_str, 'kcal': kcal, 'msg': "안내 중", 'danger_geojson': danger_geojson, 'special_points': special_points}
-            except Exception as e: st.error(f"실패: {e}")
+                        st.session_state['route_data'] = {'coords': res_coords, 'type': 'normal', 'time': walk_time, 'dist': int(total_len), 'dist_str': dist_str, 'kcal': kcal, 'msg': msg, 'danger_geojson': danger_geojson, 'special_points': special_points}
+            except Exception as e: st.error(f"경로 탐색 실패: {e}")
 
 # ---------------------------------------------------------
 # 7. 지도 표시
@@ -313,21 +310,19 @@ if do_search:
 m = folium.Map(location=st.session_state['map_center'], zoom_start=15, tiles=None)
 folium.TileLayer('https://xdworld.vworld.kr/2d/Base/service/{z}/{x}/{y}.png', attr='VWorld', name='VWorld').add_to(m)
 
-# 내 위치 (초록)
+# 내 위치
 if st.session_state['last_pos']:
     folium.CircleMarker(location=st.session_state['last_pos'], radius=8, color='white', fill=True, fill_color='#03C75A', fill_opacity=1, tooltip="내 현재 위치").add_to(m)
 
-# 출발(파랑) / 도착(빨강)
+# 출발/도착 마커 (클릭 시 취소 툴팁)
 if st.session_state['start_point']:
-    folium.Marker(st.session_state['start_point'], icon=folium.Icon(color='blue', icon='play'), tooltip="출발").add_to(m)
+    folium.Marker(st.session_state['start_point'], icon=folium.Icon(color='blue', icon='play'), tooltip="출발지 (클릭 시 취소)").add_to(m)
 if st.session_state['end_point']:
-    folium.Marker(st.session_state['end_point'], icon=folium.Icon(color='red', icon='flag'), tooltip="도착").add_to(m)
+    folium.Marker(st.session_state['end_point'], icon=folium.Icon(color='red', icon='flag'), tooltip="도착지 (클릭 시 취소)").add_to(m)
 
-# 시설 아이콘
 if st.session_state.get('facility_data'):
     for fac in st.session_state['facility_data']: folium.Marker(location=fac['coords'], icon=folium.Icon(color=fac['color'], icon=fac['icon'], prefix='fa'), tooltip=fac['name']).add_to(m)
 
-# 경로
 if st.session_state.get('route_data'):
     data = st.session_state['route_data']
     if data['danger_geojson']: folium.GeoJson(data['danger_geojson'], style_function=lambda x: {'color': 'red', 'fillColor': 'red', 'fillOpacity': 0.2}).add_to(m)
@@ -338,20 +333,36 @@ if st.session_state.get('route_data'):
 
 output = st_folium(m, width="100%", height=400, key="main_map")
 
-# [핵심] 지도 클릭 로직
+# [핵심] 스마트 클릭 & 취소 로직
 if output['last_clicked']:
     clicked = (output['last_clicked']['lat'], output['last_clicked']['lng'])
-    if click_option == "도착지 찍기":
-        st.session_state['end_point'] = clicked
-        st.session_state['end_name'] = "지도 선택 위치"
-        st.toast("🏁 도착지 설정!")
+    
+    # 1. 출발지 설정 모드인지 확인
+    if set_start_mode:
+        # 기존 출발지랑 같은 곳 클릭했으면 취소
+        if is_same_location(clicked, st.session_state['start_point']):
+            st.session_state['start_point'] = st.session_state['last_pos'] # GPS로 복귀
+            st.session_state['start_name'] = "내 위치"
+            st.session_state['manual_start'] = False
+            st.toast("출발지 설정 취소 (GPS 복귀)")
+        else:
+            st.session_state['start_point'] = clicked
+            st.session_state['start_name'] = "지도 선택"
+            st.session_state['manual_start'] = True
+            st.toast("📍 출발지 설정됨")
         st.rerun()
+        
+    # 2. 아니면 기본적으로 도착지 설정
     else:
-        # 출발지 수동 설정 활성화
-        st.session_state['start_point'] = clicked
-        st.session_state['start_name'] = "지도 선택 위치"
-        st.session_state['manual_start'] = True 
-        st.toast("📍 출발지 고정됨 (GPS 무시)")
+        # 기존 도착지랑 같은 곳 클릭했으면 취소
+        if is_same_location(clicked, st.session_state['end_point']):
+            st.session_state['end_point'] = None
+            st.session_state['end_name'] = ""
+            st.toast("도착지 취소됨")
+        else:
+            st.session_state['end_point'] = clicked
+            st.session_state['end_name'] = "지도 선택"
+            st.toast("🏁 도착지 설정됨")
         st.rerun()
 
 # 결과 카드
