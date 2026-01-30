@@ -24,6 +24,7 @@ st.set_page_config(page_title="뚜벅이 NAVI", layout="wide", initial_sidebar_s
 
 st.markdown("""
 <style>
+    /* 배경 & 텍스트 강제 블랙/화이트 */
     .stApp, [data-testid="stAppViewContainer"] { background-color: #ffffff !important; }
     h1, h2, h3, h4, h5, h6, p, span, div, label, input { color: #000000 !important; }
     
@@ -31,7 +32,6 @@ st.markdown("""
         background-color: #f0f2f5 !important; 
         color: #000000 !important;
         -webkit-text-fill-color: #000000 !important;
-        caret-color: #000000 !important;
         border: 1px solid #ccc !important;
         border-radius: 12px !important;
     }
@@ -70,6 +70,7 @@ if 'route_data' not in st.session_state: st.session_state['route_data'] = None
 if 'last_pos' not in st.session_state: st.session_state['last_pos'] = None
 if 'gps_mode' not in st.session_state: st.session_state['gps_mode'] = True 
 if 'facility_data' not in st.session_state: st.session_state['facility_data'] = []
+if 'click_mode' not in st.session_state: st.session_state['click_mode'] = 'end' # [New] 클릭 모드 (start/end)
 
 # ---------------------------------------------------------
 # 3. 헬퍼 함수
@@ -144,13 +145,19 @@ def calculate_pedestrian_weight(G_proj, danger_zone_proj, avoid_stairs=False, av
         highway = data.get('highway', ''); highway = highway[0] if isinstance(highway, list) else highway
         crossing = data.get('crossing', None)
         
+        # [수정] 서비스 도로(주차장 등) 페널티 강화 -> 지그재그 방지
         if highway == 'service': penalty = 1.5 
         elif highway == 'crossing' or crossing is not None: penalty = 0.5 
         elif highway in ['footway', 'path', 'pedestrian', 'living_street']: penalty = 0.9 
         elif highway in ['primary', 'secondary', 'tertiary', 'trunk']: penalty = 1.0 
         
         if highway == 'steps': penalty = 100.0 if avoid_stairs else 2.0 
-        if danger_zone_proj and 'geometry' in data and data['geometry'].intersects(danger_zone_proj): penalty = 100.0 if avoid_danger else 1.0
+        
+        # [수정] 유흥가 회피 로직 강화
+        if avoid_danger and danger_zone_proj and 'geometry' in data:
+            if data['geometry'].intersects(danger_zone_proj):
+                penalty = 50.0 # 50배 페널티 (무조건 우회)
+
         data['walk_cost'] = base_cost * penalty
     return G_proj
 
@@ -177,18 +184,19 @@ with c_end:
     dest_query = st.text_input("도착지", placeholder="예: 스타벅스 홍대점", key="e_input")
 
 if st.button("🔍 경로 탐색 (Search)", type="primary"):
+    # 출발지 설정
     if start_query.strip():
         s_coords, s_name = get_coords_by_kakao(start_query)
         if s_coords:
             st.session_state['start_point'] = s_coords
             st.session_state['start_name'] = s_name
-        else: st.error("출발지를 못 찾겠어요.")
+        else: st.error("출발지 못 찾음")
     else:
         if st.session_state['last_pos']:
             st.session_state['start_point'] = st.session_state['last_pos']
             st.session_state['start_name'] = "내 위치"
-        else: st.error("GPS 신호 대기 중...")
 
+    # 도착지 설정
     if dest_query.strip():
         e_coords, e_name = get_coords_by_kakao(dest_query)
         if e_coords:
@@ -199,7 +207,10 @@ if st.button("🔍 경로 탐색 (Search)", type="primary"):
                 mid_lon = (st.session_state['start_point'][1] + e_coords[1]) / 2
                 st.session_state['map_center'] = [mid_lat, mid_lon]
             st.rerun()
-        else: st.error("도착지를 못 찾겠어요.")
+        else: st.error("도착지 못 찾음")
+
+# [New] 지도 클릭 모드 선택 (라디오 버튼)
+click_option = st.radio("📍 지도 클릭 시 설정:", ["도착지 설정", "출발지 설정"], horizontal=True)
 
 with st.expander("⚙️ 상세 옵션", expanded=False):
     c1, c2, c3 = st.columns(3)
@@ -216,7 +227,7 @@ if calc_ready:
     start = st.session_state['start_point']
     end = st.session_state['end_point']
     
-    with st.spinner(f"경로 계산 중... ({st.session_state['start_name']} → {st.session_state['end_name']})"):
+    with st.spinner(f"경로 계산 중..."):
         try:
             linear_dist = np.sqrt((start[0]-end[0])**2 + (start[1]-end[1])**2) * 111000
             
@@ -236,10 +247,15 @@ if calc_ready:
                 danger_poly_proj = None; danger_geojson = None
                 try:
                     if avoid_danger:
-                        tags = {'landuse': ['retail', 'commercial'], 'amenity': ['bar', 'pub', 'nightclub']}
+                        # [수정] 유흥가 정의를 구체화 (술집, 클럽, 노래방)
+                        tags = {'amenity': ['bar', 'pub', 'nightclub', 'karaoke', 'biergarten']}
                         bbox = ox.utils_geo.bbox_from_point((mid_lat, mid_lon), dist=radius)
                         gdf = ox.features_from_bbox(bbox=bbox, tags=tags)
-                        if not gdf.empty: danger_poly_proj = gdf.to_crs(G_proj.graph['crs']).geometry.buffer(10).union_all()
+                        if not gdf.empty: 
+                            # 안전을 위해 버퍼를 20m로 늘림
+                            danger_poly_proj = gdf.to_crs(G_proj.graph['crs']).geometry.buffer(20).union_all()
+                            danger_poly_vis = gdf.geometry.union_all()
+                            if not danger_poly_vis.is_empty: danger_geojson = gpd.GeoSeries([danger_poly_vis]).__geo_interface__
                 except: pass
 
                 G_proj = calculate_pedestrian_weight(G_proj, danger_poly_proj, avoid_stairs, avoid_danger)
@@ -271,7 +287,7 @@ if calc_ready:
                     
                     walk_time = int(total_len / 67); dist_str = format_distance(int(total_len))
                     s_exit = get_nearest_subway_exit(start); e_exit = get_nearest_subway_exit(end)
-                    st.session_state['route_data'] = {'coords': res_coords, 'type': 'normal', 'time': walk_time, 'dist': int(total_len), 'dist_str': dist_str, 'msg': "안내 중", 'danger_geojson': None, 'segments': segments, 'special_points': special_points, 'subway_info': {'start': s_exit, 'end': e_exit}}
+                    st.session_state['route_data'] = {'coords': res_coords, 'type': 'normal', 'time': walk_time, 'dist': int(total_len), 'dist_str': dist_str, 'msg': "안내 중", 'danger_geojson': danger_geojson, 'segments': segments, 'special_points': special_points, 'subway_info': {'start': s_exit, 'end': e_exit}}
         except Exception as e: st.error(f"계산 실패: {e}")
 
 # ---------------------------------------------------------
@@ -292,13 +308,9 @@ if st.session_state['route_data']:
 m = folium.Map(location=st.session_state['map_center'], zoom_start=15, tiles=None)
 folium.TileLayer('https://xdworld.vworld.kr/2d/Base/service/{z}/{x}/{y}.png', attr='VWorld', name='VWorld').add_to(m)
 
-# [New] 내 실제 위치 (파란 점) - 경로와 상관없이 항상 표시
+# 내 실제 위치 (파란 점)
 if st.session_state['last_pos']:
-    folium.CircleMarker(
-        location=st.session_state['last_pos'],
-        radius=10, color='white', fill=True, fill_color='#03C75A', fill_opacity=1,
-        tooltip="내 현재 위치"
-    ).add_to(m)
+    folium.CircleMarker(location=st.session_state['last_pos'], radius=10, color='white', fill=True, fill_color='#03C75A', fill_opacity=1, tooltip="내 현재 위치").add_to(m)
 
 # 출발/도착 마커
 if st.session_state['start_point']:
@@ -306,12 +318,32 @@ if st.session_state['start_point']:
 if st.session_state['end_point']:
     folium.Marker(st.session_state['end_point'], icon=folium.Icon(color='red', icon='flag'), tooltip="도착").add_to(m)
 
+# 편의시설 & 위험지역(디버깅용)
 if st.session_state.get('facility_data'):
     for fac in st.session_state['facility_data']: folium.Marker(location=fac['coords'], icon=folium.Icon(color=fac['color'], icon=fac['icon'], prefix='fa'), tooltip=fac['name']).add_to(m)
-if st.session_state.get('route_data') and st.session_state['route_data']['coords']:
+
+if st.session_state.get('route_data'):
     data = st.session_state['route_data']
-    folium.PolyLine(data['coords'], color='#03C75A', weight=8, opacity=0.8).add_to(m)
-    for sp in data['special_points']: folium.Marker(sp['coords'], icon=folium.Icon(color=sp['color'], icon=sp['icon'], prefix='fa'), tooltip=sp['tooltip']).add_to(m)
-    m.fit_bounds(data['coords'])
+    if data['danger_geojson']: # 위험지역 회피 시 지도에 붉은 영역 표시
+        folium.GeoJson(data['danger_geojson'], style_function=lambda x: {'color': 'red', 'fillColor': 'red', 'fillOpacity': 0.2}).add_to(m)
+    if data['coords']:
+        folium.PolyLine(data['coords'], color='#03C75A', weight=8, opacity=0.8).add_to(m)
+        for sp in data['special_points']: folium.Marker(sp['coords'], icon=folium.Icon(color=sp['color'], icon=sp['icon'], prefix='fa'), tooltip=sp['tooltip']).add_to(m)
+        m.fit_bounds(data['coords'])
 
 output = st_folium(m, width="100%", height=600, key="main_map")
+
+# [New] 클릭 로직 개선
+if output['last_clicked']:
+    clicked = (output['last_clicked']['lat'], output['last_clicked']['lng'])
+    
+    if click_option == "도착지 설정":
+        st.session_state['end_point'] = clicked
+        st.session_state['end_name'] = "지도 선택 위치"
+        st.toast("🏁 도착지가 설정되었습니다.")
+        st.rerun()
+    else:
+        st.session_state['start_point'] = clicked
+        st.session_state['start_name'] = "지도 선택 위치"
+        st.toast("📍 출발지가 설정되었습니다.")
+        st.rerun()
