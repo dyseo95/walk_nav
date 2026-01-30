@@ -6,6 +6,9 @@ import networkx as nx
 import numpy as np
 import geopandas as gpd
 from shapely.geometry import Point
+from gtts import gTTS # 음성 안내용
+import base64
+import io
 
 # 라이브러리 안전 로딩
 try:
@@ -14,77 +17,18 @@ except ImportError:
     get_geolocation = None
 
 # ---------------------------------------------------------
-# 1. 페이지 설정 & "강제 라이트 모드" CSS
+# 1. 페이지 설정 & 스타일
 # ---------------------------------------------------------
-st.set_page_config(page_title="뚜벅이 NAVI", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="뚜벅이 NAVI Pro", layout="wide", initial_sidebar_state="collapsed")
 
 st.markdown("""
 <style>
-    /* [핵심] 다크모드 무시하고 무조건 라이트 모드(흰색 바탕, 검은 글씨) 강제 적용 */
-    [data-testid="stAppViewContainer"] {
-        background-color: #ffffff;
-        color: #000000;
-    }
-    [data-testid="stHeader"] {
-        background-color: #ffffff;
-    }
-    [data-testid="stSidebar"] {
-        background-color: #f8f9fa;
-    }
-    
-    /* 입력창 텍스트 색상 강제 (검정) */
-    .stTextInput input {
-        color: #000000 !important;
-        background-color: #f0f2f5 !important;
-    }
-    
-    /* 체크박스 글씨 색상 */
-    .stCheckbox label {
-        color: #000000 !important;
-    }
-
-    /* 상단 컨트롤 박스 스타일 */
-    .control-panel {
-        background-color: #ffffff;
-        padding: 15px;
-        border-radius: 15px;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-        margin-bottom: 15px;
-        border: 1px solid #e0e0e0;
-    }
-
-    /* 네이버 스타일 버튼 */
-    .stButton>button {
-        background-color: #03C75A;
-        color: white !important;
-        border-radius: 8px;
-        border: none;
-        height: 3em;
-        font-weight: bold;
-        width: 100%;
-    }
-    .stButton>button:hover {
-        background-color: #02b351;
-        color: white !important;
-    }
-
-    /* 결과 카드 스타일 (Bottom Sheet 느낌) */
-    .result-card {
-        background-color: #ffffff;
-        border-top: 1px solid #eee;
-        padding: 20px;
-        border-radius: 20px 20px 0 0;
-        box-shadow: 0 -4px 10px rgba(0,0,0,0.05);
-        margin-top: -20px;
-        position: relative;
-        z-index: 1000;
-    }
-    
-    /* 여백 제거 */
-    .block-container {
-        padding-top: 1rem;
-        padding-bottom: 5rem;
-    }
+    [data-testid="stAppViewContainer"] { background-color: #ffffff; color: #000000; }
+    [data-testid="stHeader"] { background-color: #ffffff; }
+    .control-panel { background-color: #ffffff; padding: 15px; border-radius: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); margin-bottom: 10px; border: 1px solid #e0e0e0; }
+    .stButton>button { background-color: #03C75A; color: white !important; border-radius: 8px; border: none; height: 3em; font-weight: bold; width: 100%; }
+    .result-card { background-color: #ffffff; border-top: 1px solid #eee; padding: 20px; border-radius: 20px 20px 0 0; box-shadow: 0 -4px 10px rgba(0,0,0,0.05); margin-top: -20px; position: relative; z-index: 1000; }
+    .block-container { padding-top: 0.5rem; padding-bottom: 5rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -96,26 +40,55 @@ if 'map_center' not in st.session_state: st.session_state['map_center'] = [37.56
 if 'route_data' not in st.session_state: st.session_state['route_data'] = None
 if 'last_pos' not in st.session_state: st.session_state['last_pos'] = None
 if 'gps_mode' not in st.session_state: st.session_state['gps_mode'] = True 
+if 'facility_data' not in st.session_state: st.session_state['facility_data'] = [] # 편의시설 데이터
 
 # ---------------------------------------------------------
-# 3. GPS 엔진
+# 3. 헬퍼 함수 (음성 & 편의시설)
 # ---------------------------------------------------------
-if st.session_state['gps_mode'] and get_geolocation:
+def text_to_speech(text):
+    """텍스트를 음성(mp3)으로 변환하여 HTML 오디오 태그 반환"""
     try:
-        loc_data = get_geolocation() 
-        if loc_data and isinstance(loc_data, dict) and 'coords' in loc_data:
-            lat = loc_data['coords']['latitude']
-            lon = loc_data['coords']['longitude']
-            st.session_state['last_pos'] = (lat, lon)
-            if 'init_gps' not in st.session_state:
-                st.session_state['map_center'] = [lat, lon]
-                st.session_state['init_gps'] = True
-                st.rerun()
-    except: st.session_state['gps_mode'] = False
+        tts = gTTS(text=text, lang='ko')
+        mp3_fp = io.BytesIO()
+        tts.write_to_fp(mp3_fp)
+        mp3_fp.seek(0)
+        b64 = base64.b64encode(mp3_fp.read()).decode()
+        return f"""
+            <audio autoplay="true" style="width: 100%;">
+                <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
+            </audio>
+        """
+    except: return ""
 
-# ---------------------------------------------------------
-# 4. 헬퍼 함수
-# ---------------------------------------------------------
+def get_facilities(point, radius=500):
+    """주변 반경 내 화장실, 편의점, 카페 검색"""
+    facilities = []
+    try:
+        tags = {'amenity': ['toilets', 'cafe'], 'shop': ['convenience']}
+        bbox = ox.utils_geo.bbox_from_point(point, dist=radius)
+        gdf = ox.features_from_bbox(bbox=bbox, tags=tags)
+        
+        if not gdf.empty:
+            for idx, row in gdf.iterrows():
+                amenity = row.get('amenity')
+                shop = row.get('shop')
+                name = row.get('name', '이름 없음')
+                
+                lat, lon = None, None
+                if hasattr(row.geometry, 'centroid'):
+                    lat, lon = row.geometry.centroid.y, row.geometry.centroid.x
+                else:
+                    lat, lon = row.geometry.y, row.geometry.x
+                
+                icon, color = "question", "gray"
+                if amenity == 'toilets': icon, color = "restroom", "blue"
+                elif amenity == 'cafe': icon, color = "coffee", "brown"
+                elif shop == 'convenience': icon, color = "shopping-cart", "orange"
+                
+                facilities.append({'coords': [lat, lon], 'name': name, 'icon': icon, 'color': color})
+    except: pass
+    return facilities
+
 def get_nearest_subway_exit(point, radius=200):
     try:
         tags = {'railway': 'subway_entrance'}
@@ -158,17 +131,32 @@ def calculate_pedestrian_weight(G_proj, danger_zone_proj, avoid_stairs=False, av
     return G_proj
 
 # ---------------------------------------------------------
-# 5. UI 컨트롤 패널 (상단 고정 느낌)
+# 4. GPS 엔진
+# ---------------------------------------------------------
+if st.session_state['gps_mode'] and get_geolocation:
+    try:
+        loc_data = get_geolocation() 
+        if loc_data and isinstance(loc_data, dict) and 'coords' in loc_data:
+            lat = loc_data['coords']['latitude']
+            lon = loc_data['coords']['longitude']
+            st.session_state['last_pos'] = (lat, lon)
+            if 'init_gps' not in st.session_state:
+                st.session_state['map_center'] = [lat, lon]
+                st.session_state['init_gps'] = True
+                st.rerun()
+    except: st.session_state['gps_mode'] = False
+
+# ---------------------------------------------------------
+# 5. UI 컨트롤 패널
 # ---------------------------------------------------------
 st.markdown('<div class="control-panel">', unsafe_allow_html=True)
 col_input, col_go = st.columns([3, 1])
 
 with col_input:
-    # 검색창 아이콘과 함께 배치
     dest_query = st.text_input("목적지 검색", placeholder="장소, 주소 입력", label_visibility="collapsed")
 
 with col_go:
-    if st.button("🔍 이동"):
+    if st.button("🔍"):
         if dest_query:
             try:
                 coords = ox.geocode(dest_query)
@@ -177,16 +165,15 @@ with col_go:
                 st.rerun()
             except: st.error("장소 미발견")
 
-# 옵션 토글 (깔끔하게 한 줄로)
-c_opt1, c_opt2 = st.columns(2)
-with c_opt1: avoid_stairs = st.checkbox("🪜 계단 회피", value=False)
-with c_opt2: avoid_danger = st.checkbox("🛡️ 유흥가 회피", value=False)
+c_opt1, c_opt2, c_opt3 = st.columns(3)
+with c_opt1: avoid_stairs = st.checkbox("계단 회피", value=False)
+with c_opt2: avoid_danger = st.checkbox("유흥가 회피", value=False)
+with c_opt3: show_facility = st.checkbox("🏪 편의시설", value=False) # [New]
 st.markdown('</div>', unsafe_allow_html=True)
 
-# 길찾기 버튼 (중앙 배치)
 nav_ready = st.session_state['last_pos'] is not None and st.session_state['end_point'] is not None
 if nav_ready:
-    if st.button("🚀 현위치에서 경로안내 시작", type="primary"):
+    if st.button("🚀 경로안내 시작", type="primary"):
         with st.spinner("경로 계산 중..."):
             try:
                 start = st.session_state['last_pos']
@@ -195,6 +182,12 @@ if nav_ready:
                 end_exit = get_nearest_subway_exit(end)
                 linear_dist = np.sqrt((start[0]-end[0])**2 + (start[1]-end[1])**2) * 111000
                 
+                # 편의시설 데이터 로딩 (옵션 켜져있을 때만)
+                if show_facility:
+                    st.session_state['facility_data'] = get_facilities(start, radius=500)
+                else:
+                    st.session_state['facility_data'] = []
+
                 if linear_dist > 5000:
                     walk_time = int(linear_dist / 67)
                     st.session_state['route_data'] = {'coords': [start, end], 'type': 'drone', 'time': walk_time, 'dist': int(linear_dist), 'msg': "장거리 직선 안내", 'danger_geojson': None, 'segments': [], 'special_points': [], 'subway_info': None}
@@ -249,7 +242,7 @@ if nav_ready:
             except Exception as e: st.error(f"오류: {e}")
 
 # ---------------------------------------------------------
-# 6. 메인 지도 (화면 꽉 차게)
+# 6. 메인 지도
 # ---------------------------------------------------------
 m = folium.Map(location=st.session_state['map_center'], zoom_start=17, tiles=None)
 folium.TileLayer('https://xdworld.vworld.kr/2d/Base/service/{z}/{x}/{y}.png', attr='VWorld', name='VWorld').add_to(m)
@@ -260,6 +253,15 @@ if st.session_state['last_pos']:
 if st.session_state['end_point']:
     folium.Marker(st.session_state['end_point'], icon=folium.Icon(color='red', icon='flag')).add_to(m)
 
+# [New] 편의시설 아이콘 표시
+if st.session_state.get('facility_data'):
+    for fac in st.session_state['facility_data']:
+        folium.Marker(
+            location=fac['coords'],
+            icon=folium.Icon(color=fac['color'], icon=fac['icon'], prefix='fa'),
+            tooltip=fac['name']
+        ).add_to(m)
+
 if st.session_state.get('route_data'):
     data = st.session_state['route_data']
     if data['coords']:
@@ -268,25 +270,28 @@ if st.session_state.get('route_data'):
             folium.Marker(sp['coords'], icon=folium.Icon(color=sp['color'], icon=sp['icon'], prefix='fa'), tooltip=sp['tooltip']).add_to(m)
         m.fit_bounds(data['coords'])
 
-# 지도 높이를 키워서 모바일에서 시원하게 보이게 함 (700px)
 output = st_folium(m, width="100%", height=700, key="main_map")
 
 if output['last_clicked']:
     clicked = (output['last_clicked']['lat'], output['last_clicked']['lng'])
     if not st.session_state['last_pos']:
         st.session_state['last_pos'] = clicked
-        st.toast("📍 출발지 설정됨")
         st.rerun()
     else:
         st.session_state['end_point'] = clicked
-        st.toast("🏁 도착지 설정됨")
         st.rerun()
 
 # ---------------------------------------------------------
-# 7. 하단 정보 패널 (Bottom Sheet)
+# 7. 하단 정보 패널 & 음성 재생
 # ---------------------------------------------------------
 if st.session_state['route_data']:
     data = st.session_state['route_data']
+    
+    # [New] 음성 안내 자동 재생
+    speech_text = f"경로 안내를 시작합니다. 목적지까지 약 {data['time']}분, 거리는 {data['dist']}미터입니다."
+    audio_html = text_to_speech(speech_text)
+    st.markdown(audio_html, unsafe_allow_html=True) # 눈에 안 보이게 자동 재생
+
     st.markdown(f"""
     <div class="result-card">
         <h2 style="margin:0; color:#03C75A;">{data['time']}분 <span style="font-size:0.6em; color:#666;">({data['dist']}m)</span></h2>
@@ -294,7 +299,7 @@ if st.session_state['route_data']:
     </div>
     """, unsafe_allow_html=True)
     
-    with st.expander("📄 상세 경로 (클릭해서 보기)"):
+    with st.expander("📄 상세 경로"):
         for idx, seg in enumerate(data['segments']):
              icon = "🚶"
              if "횡단보도" in seg['name']: icon = "🚦"
