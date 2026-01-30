@@ -9,6 +9,7 @@ from shapely.geometry import Point
 from gtts import gTTS 
 import base64
 import io
+import requests # 카카오 통신용
 
 # 라이브러리 안전 로딩
 try:
@@ -19,7 +20,7 @@ except ImportError:
 # ---------------------------------------------------------
 # 1. 페이지 설정 & 스타일
 # ---------------------------------------------------------
-st.set_page_config(page_title="뚜벅이 NAVI Pro", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="뚜벅이 NAVI Final", layout="wide", initial_sidebar_state="collapsed")
 
 st.markdown("""
 <style>
@@ -29,7 +30,6 @@ st.markdown("""
     .stButton>button { background-color: #03C75A; color: white !important; border-radius: 8px; border: none; height: 3em; font-weight: bold; width: 100%; }
     .result-card { background-color: #ffffff; border-top: 1px solid #eee; padding: 20px; border-radius: 20px 20px 0 0; box-shadow: 0 -4px 10px rgba(0,0,0,0.05); margin-top: -20px; position: relative; z-index: 1000; }
     .block-container { padding-top: 0.5rem; padding-bottom: 5rem; }
-    /* 오디오 플레이어 스타일 */
     audio { width: 100%; margin-bottom: 10px; }
 </style>
 """, unsafe_allow_html=True)
@@ -45,24 +45,42 @@ if 'gps_mode' not in st.session_state: st.session_state['gps_mode'] = True
 if 'facility_data' not in st.session_state: st.session_state['facility_data'] = []
 
 # ---------------------------------------------------------
-# 3. 헬퍼 함수
+# 3. 헬퍼 함수 (카카오 검색 추가됨)
 # ---------------------------------------------------------
+def get_coords_by_kakao(query):
+    """
+    [New] 카카오 로컬 API를 이용해 장소/주소를 위경도로 변환
+    """
+    try:
+        url = "https://dapi.kakao.com/v2/local/search/keyword.json"
+        headers = {"Authorization": "KakaoAK 035927af643bdbfe791b1639431879fc"} # 사용자님의 소중한 키
+        params = {"query": query}
+        
+        response = requests.get(url, headers=headers, params=params)
+        json_data = response.json()
+        
+        if json_data['documents']:
+            # 가장 정확도 높은 첫 번째 결과 가져오기
+            best_match = json_data['documents'][0]
+            lat = float(best_match['y'])
+            lon = float(best_match['x'])
+            place_name = best_match['place_name']
+            return [lat, lon], place_name
+        else:
+            return None, None
+    except Exception as e:
+        print(f"카카오 검색 에러: {e}")
+        return None, None
+
 def text_to_speech(text):
-    """텍스트를 음성(mp3)으로 변환하여 HTML 오디오 태그 반환 (Controls 추가)"""
     try:
         tts = gTTS(text=text, lang='ko')
         mp3_fp = io.BytesIO()
         tts.write_to_fp(mp3_fp)
         mp3_fp.seek(0)
         b64 = base64.b64encode(mp3_fp.read()).decode()
-        # autoplay와 함께 controls 속성을 추가하여 플레이어를 보이게 함
-        return f"""
-            <audio controls autoplay>
-                <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
-            </audio>
-        """
-    except Exception as e:
-        return f"<div>음성 생성 실패: {e}</div>"
+        return f"""<audio controls autoplay><source src="data:audio/mp3;base64,{b64}" type="audio/mp3"></audio>"""
+    except: return "<div>음성 생성 실패</div>"
 
 def get_facilities(point, radius=500):
     facilities = []
@@ -70,24 +88,15 @@ def get_facilities(point, radius=500):
         tags = {'amenity': ['toilets', 'cafe'], 'shop': ['convenience']}
         bbox = ox.utils_geo.bbox_from_point(point, dist=radius)
         gdf = ox.features_from_bbox(bbox=bbox, tags=tags)
-        
         if not gdf.empty:
             for idx, row in gdf.iterrows():
-                amenity = row.get('amenity')
-                shop = row.get('shop')
+                amenity = row.get('amenity'); shop = row.get('shop')
                 name = row.get('name', '이름 없음')
-                
-                lat, lon = None, None
-                if hasattr(row.geometry, 'centroid'):
-                    lat, lon = row.geometry.centroid.y, row.geometry.centroid.x
-                else:
-                    lat, lon = row.geometry.y, row.geometry.x
-                
+                lat, lon = (row.geometry.centroid.y, row.geometry.centroid.x) if hasattr(row.geometry, 'centroid') else (row.geometry.y, row.geometry.x)
                 icon, color = "question", "gray"
                 if amenity == 'toilets': icon, color = "restroom", "blue"
                 elif amenity == 'cafe': icon, color = "coffee", "brown"
                 elif shop == 'convenience': icon, color = "shopping-cart", "orange"
-                
                 facilities.append({'coords': [lat, lon], 'name': name, 'icon': icon, 'color': color})
     except: pass
     return facilities
@@ -105,9 +114,7 @@ def get_nearest_subway_exit(point, radius=200):
             exit_no = row.get('ref')
             if not exit_no: continue
             dist = row.geometry.centroid.distance(point_geom)
-            if dist < min_dist:
-                min_dist = dist
-                best_exit = {'no': exit_no, 'coords': (row.geometry.centroid.y, row.geometry.centroid.x)}
+            if dist < min_dist: min_dist = dist; best_exit = {'no': exit_no, 'coords': (row.geometry.centroid.y, row.geometry.centroid.x)}
         return best_exit
     except: return None
 
@@ -115,21 +122,16 @@ def calculate_pedestrian_weight(G_proj, danger_zone_proj, avoid_stairs=False, av
     for u, v, k, data in G_proj.edges(keys=True, data=True):
         base_cost = data['length']
         penalty = 1.0
-        highway = data.get('highway', '')
-        if isinstance(highway, list): highway = highway[0]
+        highway = data.get('highway', ''); highway = highway[0] if isinstance(highway, list) else highway
         crossing = data.get('crossing', None)
         
         if highway == 'crossing' or crossing is not None: penalty = 0.5 
         elif highway in ['footway', 'path', 'pedestrian', 'living_street']: penalty = 0.95
         elif highway in ['primary', 'secondary', 'tertiary', 'trunk']: penalty = 1.0 
         
-        if highway == 'steps':
-            if avoid_stairs: penalty = 100.0
-            else: penalty = 1.5 
-        if danger_zone_proj and 'geometry' in data:
-            if data['geometry'].intersects(danger_zone_proj):
-                if avoid_danger: penalty = 100.0
-                else: penalty = 1.0
+        if highway == 'steps': penalty = 100.0 if avoid_stairs else 1.5 
+        if danger_zone_proj and 'geometry' in data and data['geometry'].intersects(danger_zone_proj):
+            penalty = 100.0 if avoid_danger else 1.0
         data['walk_cost'] = base_cost * penalty
     return G_proj
 
@@ -140,13 +142,10 @@ if st.session_state['gps_mode'] and get_geolocation:
     try:
         loc_data = get_geolocation() 
         if loc_data and isinstance(loc_data, dict) and 'coords' in loc_data:
-            lat = loc_data['coords']['latitude']
-            lon = loc_data['coords']['longitude']
+            lat = loc_data['coords']['latitude']; lon = loc_data['coords']['longitude']
             st.session_state['last_pos'] = (lat, lon)
             if 'init_gps' not in st.session_state:
-                st.session_state['map_center'] = [lat, lon]
-                st.session_state['init_gps'] = True
-                st.rerun()
+                st.session_state['map_center'] = [lat, lon]; st.session_state['init_gps'] = True; st.rerun()
     except: st.session_state['gps_mode'] = False
 
 # ---------------------------------------------------------
@@ -156,28 +155,31 @@ st.markdown('<div class="control-panel">', unsafe_allow_html=True)
 col_input, col_go = st.columns([3, 1])
 
 with col_input:
-    dest_query = st.text_input("목적지 검색", placeholder="장소, 주소 입력", label_visibility="collapsed")
+    dest_query = st.text_input("목적지 검색", placeholder="예: 스타벅스 강남점", label_visibility="collapsed")
 
 with col_go:
     if st.button("🔍"):
         if dest_query:
-            try:
-                coords = ox.geocode(dest_query)
+            # [New] 카카오 검색 엔진 가동
+            coords, place_name = get_coords_by_kakao(dest_query)
+            if coords:
                 st.session_state['map_center'] = coords
                 st.session_state['end_point'] = coords
+                st.toast(f"📍 '{place_name}'(으)로 이동합니다.")
                 st.rerun()
-            except: st.error("장소 미발견")
+            else:
+                st.error("장소를 찾지 못했습니다. 검색어를 확인해주세요.")
 
-c_opt1, c_opt2, c_opt3 = st.columns(3)
-with c_opt1: avoid_stairs = st.checkbox("계단 회피", value=False)
-with c_opt2: avoid_danger = st.checkbox("유흥가 회피", value=False)
-with c_opt3: show_facility = st.checkbox("🏪 편의시설", value=False)
+c1, c2, c3 = st.columns(3)
+with c1: avoid_stairs = st.checkbox("계단 회피", value=False)
+with c2: avoid_danger = st.checkbox("유흥가 회피", value=False)
+with c3: show_facility = st.checkbox("🏪 편의시설", value=False)
 st.markdown('</div>', unsafe_allow_html=True)
 
 nav_ready = st.session_state['last_pos'] is not None and st.session_state['end_point'] is not None
 if nav_ready:
     if st.button("🚀 경로안내 시작", type="primary"):
-        with st.spinner("경로 계산 중..."):
+        with st.spinner("최적 경로 계산 중..."):
             try:
                 start = st.session_state['last_pos']
                 end = st.session_state['end_point']
@@ -185,11 +187,8 @@ if nav_ready:
                 end_exit = get_nearest_subway_exit(end)
                 linear_dist = np.sqrt((start[0]-end[0])**2 + (start[1]-end[1])**2) * 111000
                 
-                # 편의시설 데이터 로딩
-                if show_facility:
-                    st.session_state['facility_data'] = get_facilities(start, radius=500)
-                else:
-                    st.session_state['facility_data'] = []
+                if show_facility: st.session_state['facility_data'] = get_facilities(start, radius=500)
+                else: st.session_state['facility_data'] = []
 
                 if linear_dist > 5000:
                     walk_time = int(linear_dist / 67)
@@ -256,14 +255,9 @@ if st.session_state['last_pos']:
 if st.session_state['end_point']:
     folium.Marker(st.session_state['end_point'], icon=folium.Icon(color='red', icon='flag')).add_to(m)
 
-# 편의시설 아이콘
 if st.session_state.get('facility_data'):
     for fac in st.session_state['facility_data']:
-        folium.Marker(
-            location=fac['coords'],
-            icon=folium.Icon(color=fac['color'], icon=fac['icon'], prefix='fa'),
-            tooltip=fac['name']
-        ).add_to(m)
+        folium.Marker(location=fac['coords'], icon=folium.Icon(color=fac['color'], icon=fac['icon'], prefix='fa'), tooltip=fac['name']).add_to(m)
 
 if st.session_state.get('route_data'):
     data = st.session_state['route_data']
@@ -290,7 +284,6 @@ if output['last_clicked']:
 if st.session_state['route_data']:
     data = st.session_state['route_data']
     
-    # 음성 안내 플레이어
     speech_text = f"목적지까지 약 {data['time']}분 걸립니다. 안전하게 안내해 드릴게요."
     audio_html = text_to_speech(speech_text)
     st.markdown(audio_html, unsafe_allow_html=True)
