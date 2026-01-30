@@ -7,17 +7,16 @@ import numpy as np
 import geopandas as gpd
 from shapely.geometry import Point
 
-# 라이브러리 에러 방지용 예외처리
+# 라이브러리 안전 로딩
 try:
     from streamlit_js_eval import get_geolocation
 except ImportError:
-    st.error("라이브러리 설치가 필요합니다. requirements.txt를 확인하세요.")
     get_geolocation = None
 
 # ---------------------------------------------------------
 # 1. 설정 및 UI
 # ---------------------------------------------------------
-st.set_page_config(page_title="뚜벅이 NAVI Realtime", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="뚜벅이 NAVI Safe", layout="wide", initial_sidebar_state="collapsed")
 
 st.markdown("""
 <style>
@@ -26,33 +25,36 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🏃 실시간 뚜벅이 네비 (v17.3)")
+st.title("🏃 실시간 뚜벅이 네비 (v17.4)")
 
 # 세션 상태 초기화
 if 'end_point' not in st.session_state: st.session_state['end_point'] = None
 if 'map_center' not in st.session_state: st.session_state['map_center'] = [37.5665, 126.9780]
 if 'route_data' not in st.session_state: st.session_state['route_data'] = None
 if 'last_pos' not in st.session_state: st.session_state['last_pos'] = None
-if 'msg' not in st.session_state: st.session_state['msg'] = "GPS 신호를 기다리는 중..."
+if 'gps_mode' not in st.session_state: st.session_state['gps_mode'] = True # GPS 사용 여부
 
 # ---------------------------------------------------------
-# 2. 실시간 GPS 엔진 (수정됨)
+# 2. 실시간 GPS 엔진 (안전 모드 적용)
 # ---------------------------------------------------------
-if get_geolocation:
-    # [FIX] component_id 파라미터 삭제 (에러 원인 제거)
-    # 단순히 key만 주면 됩니다.
-    loc_data = get_geolocation(key="gps_v17_3")
+if st.session_state['gps_mode'] and get_geolocation:
+    try:
+        # [FIX] 괄호 안을 완전히 비웠습니다. (TypeError 방지)
+        loc_data = get_geolocation()
 
-    if loc_data and isinstance(loc_data, dict) and 'coords' in loc_data:
-        lat = loc_data['coords']['latitude']
-        lon = loc_data['coords']['longitude']
-        st.session_state['last_pos'] = (lat, lon)
-        
-        # 최초 1회만 지도 중심 이동
-        if 'init_gps' not in st.session_state:
-            st.session_state['map_center'] = [lat, lon]
-            st.session_state['init_gps'] = True
-            st.rerun()
+        if loc_data and isinstance(loc_data, dict) and 'coords' in loc_data:
+            lat = loc_data['coords']['latitude']
+            lon = loc_data['coords']['longitude']
+            st.session_state['last_pos'] = (lat, lon)
+            
+            if 'init_gps' not in st.session_state:
+                st.session_state['map_center'] = [lat, lon]
+                st.session_state['init_gps'] = True
+                st.rerun()
+    except Exception as e:
+        # GPS 에러 나면 조용히 수동 모드로 전환 (앱 죽음 방지)
+        st.session_state['gps_mode'] = False
+        print(f"GPS Error ignored: {e}")
 
 # ---------------------------------------------------------
 # 3. 헬퍼 함수
@@ -80,10 +82,8 @@ def calculate_pedestrian_weight(G_proj, danger_zone_proj):
     for u, v, k, data in G_proj.edges(keys=True, data=True):
         base_cost = data['length']
         penalty = 1.0
-        
         highway = data.get('highway', '')
         if isinstance(highway, list): highway = highway[0]
-        
         crossing = data.get('crossing', None)
         bridge = data.get('bridge', None)
         tunnel = data.get('tunnel', None)
@@ -113,7 +113,7 @@ with col_btn:
                 st.session_state['map_center'] = coords
                 st.session_state['end_point'] = coords
                 st.rerun()
-            except: st.error("장소를 찾을 수 없습니다.")
+            except: st.error("장소 미발견")
 
 col_nav, col_reset = st.columns([3, 1])
 with col_nav:
@@ -174,8 +174,7 @@ if nav_start:
                     dest = ox.distance.nearest_nodes(G, end[1], end[0])
                     
                     if orig == dest:
-                        walk_time = int(linear_dist / 67)
-                        if walk_time < 1: walk_time = 1
+                        walk_time = int(linear_dist / 67); if walk_time < 1: walk_time = 1
                         st.session_state['route_data'] = {
                             'coords': [start, end], 'type': 'micro', 'time': walk_time, 'dist': int(linear_dist),
                             'msg': "✅ 바로 앞입니다!", 'danger_geojson': None, 'segments': [], 'special_points': [],
@@ -185,14 +184,12 @@ if nav_start:
                         try:
                             route = nx.shortest_path(G_proj, orig, dest, weight='walk_cost')
                             res_coords = []; total_len = 0; segments = []; special_points = []
-                            
                             for u, v in zip(route[:-1], route[1:]):
                                 edge = G.get_edge_data(u, v)[0]
                                 total_len += edge['length']
                                 name = edge.get('name', ''); highway = edge.get('highway', '')
                                 if isinstance(name, list): name = name[0]
                                 if isinstance(highway, list): highway = highway[0]
-                                
                                 icon_type = None; point_coords = (G.nodes[u]['y'], G.nodes[u]['x'])
                                 if not name:
                                     if highway == 'crossing': name = "횡단보도"; icon_type = 'traffic-light'
@@ -200,13 +197,10 @@ if nav_start:
                                     elif edge.get('tunnel') == 'yes': name = "지하도"; icon_type = 'road'
                                     elif edge.get('bridge') == 'yes': name = "육교"; icon_type = 'road'
                                     else: name = "골목길"
-                                
                                 if icon_type: special_points.append({'coords': point_coords, 'icon': icon_type, 'tooltip': name, 'color': 'orange'})
-                                
                                 seg_len = int(edge['length'])
                                 if not segments or segments[-1]['name'] != name: segments.append({'name': name, 'len': seg_len})
                                 else: segments[-1]['len'] += seg_len
-
                                 if 'geometry' in edge:
                                     xs, ys = edge['geometry'].xy
                                     res_coords.extend(zip(ys, xs))
@@ -222,8 +216,7 @@ if nav_start:
                             }
                         except nx.NetworkXNoPath:
                              st.session_state['route_data'] = {'coords': [start, end], 'type': 'drone', 'time': 0, 'dist': int(linear_dist), 'msg': "길 없음", 'danger_geojson': None, 'segments': [], 'special_points': [], 'subway_info': None}
-            except Exception as e: 
-                st.error(f"계산 오류: {e}")
+            except Exception as e: st.error(f"계산 오류: {e}")
 
 # ---------------------------------------------------------
 # 6. 정보창 및 지도
@@ -231,7 +224,8 @@ if nav_start:
 if st.session_state['last_pos']:
     st.write(f'<div class="status-box">📍 내 위치 수신 중 | 목적지: {dest_query if st.session_state["end_point"] else "미설정"}</div>', unsafe_allow_html=True)
 else:
-    st.warning("📡 GPS 신호 찾는 중... (위치 권한을 허용해주세요)")
+    # GPS가 없거나 에러난 경우 수동 안내 메시지
+    st.warning("📡 GPS 신호가 없거나 권한이 차단되었습니다. 지도에서 '출발지'를 클릭해주세요.")
 
 if st.session_state['route_data']:
     data = st.session_state['route_data']
@@ -279,6 +273,18 @@ if st.session_state['route_data'] and st.session_state['route_data']['coords']:
     m.fit_bounds(data['coords'])
 
 output = st_folium(m, width=1000, height=500, key="main_map")
+
+# 지도 클릭 처리
 if output['last_clicked']:
-    st.session_state['end_point'] = (output['last_clicked']['lat'], output['last_clicked']['lng'])
-    st.rerun()
+    clicked_lat = output['last_clicked']['lat']
+    clicked_lon = output['last_clicked']['lng']
+    
+    # GPS가 없을 때는 클릭을 '출발지'로 인식 (임시)
+    if not st.session_state['last_pos']:
+        st.session_state['last_pos'] = (clicked_lat, clicked_lon)
+        st.toast("📍 지도에서 출발지를 선택했습니다.")
+        st.rerun()
+    else:
+        # GPS가 있을 때는 클릭을 '도착지'로 인식
+        st.session_state['end_point'] = (clicked_lat, clicked_lon)
+        st.rerun()
